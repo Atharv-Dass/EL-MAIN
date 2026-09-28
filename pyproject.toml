@@ -18,7 +18,7 @@ dependencies = [
 api = ["fastapi>=0.110", "uvicorn>=0.29", "sqlmodel>=0.0.16"]
 ml = [
     "torch>=2.2",
-    "transformers>=4.45",
+    "transformers>=4.56",
     "peft>=0.12",
     "accelerate>=0.33",
     "datasets>=2.20",

@@ -179,7 +179,10 @@ def bootstrap_lltm(Q: np.ndarray, successes: np.ndarray, trials: np.ndarray | No
         idx = rng.integers(0, Q.shape[0], Q.shape[0])
         r = fit_lltm(Q[idx], s[idx], n[idx], feature_names, l2=l2)
         draws[b] = r.eta
-    base.ci_low = np.nanpercentile(draws, 100 * alpha / 2, axis=0)
-    base.ci_high = np.nanpercentile(draws, 100 * (1 - alpha / 2), axis=0)
+    ok = ~np.isnan(base.eta)  # dropped (constant) columns stay NaN
+    base.ci_low = np.full(Q.shape[1], np.nan)
+    base.ci_high = np.full(Q.shape[1], np.nan)
+    base.ci_low[ok] = np.nanpercentile(draws[:, ok], 100 * alpha / 2, axis=0)
+    base.ci_high[ok] = np.nanpercentile(draws[:, ok], 100 * (1 - alpha / 2), axis=0)
     base.ci_method = f"bootstrap(n={n_boot})"
     return base
