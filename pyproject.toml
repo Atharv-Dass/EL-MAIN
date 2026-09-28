@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-api = ["fastapi>=0.110", "uvicorn>=0.29", "sqlmodel>=0.0.16"]
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
 ml = [
     "torch>=2.2",
     "transformers>=4.56",

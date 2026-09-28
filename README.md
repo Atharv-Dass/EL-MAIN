@@ -9,6 +9,7 @@ beyond simply training on *harder* data.
 
 - Research spec (novelty, maths, experiment design): [`docs/RESEARCH.md`](docs/RESEARCH.md)
 - Component registry (what's built and what's confirmed): [`docs/COMPONENTS.md`](docs/COMPONENTS.md)
+- How to run it on your GPU: [`docs/RUNNING.md`](docs/RUNNING.md)
 
 ## Layout
 ```
