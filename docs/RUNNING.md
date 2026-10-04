@@ -89,5 +89,31 @@ uvicorn dreammachine.api.app:app --host 127.0.0.1 --port 8000
 # http://127.0.0.1:8000/docs
 ```
 
-## 6. Measured numbers (RTX 4060 Laptop, 8 GB)
-Not measured yet — filled in by milestone B1 (smoke run).
+## 6. Measured numbers (RTX 4060 Laptop, 8 GB) — GPU-verified, B1 smoke run, 2026-10-04
+Setup: native Windows 11, Python 3.11.9, torch 2.11.0+cu128, transformers 5.18.0, peft 0.21.2,
+bitsandbytes 0.50.2, driver 581.29, on AC power, "Balanced" power plan. Model `Qwen/Qwen3-0.6B`, `configs/smoke.yaml`
+(eval in bf16, `max_new_tokens: 256`, `batch_size: 16`; training 4-bit QLoRA, batch 4, 30 steps).
+One measurement on one laptop: treat as a rough guide, not a benchmark.
+
+| Stage | Wall time | Model load | Work | Throughput | Peak VRAM (allocated / reserved) |
+|---|---|---|---|---|---|
+| screen (66 problems, greedy) | 200 s | 18.8 s | 177 s | 0.37 problems/s | 2.0 / 2.3 GB |
+| diagnose (216 probes × 2 samples, T=0.7) | 570 s | 15.5 s | 554 s | 0.39 problems/s = 0.78 answers/s | 2.9 / 3.3 GB |
+| build-data (CPU) | 12 s | — | — | — | — |
+| train targeted_r3_s0 (4-bit QLoRA, 30 steps) | 80 s | ~25 s (load + tokenise + save) | 54.6 s | **1.82 s/step**, 2.2 samples/s | 4.0 / 6.7 GB |
+| evaluate base (82 problems) | 242 s | 13.9 s | 223 s | 0.35–0.42 problems/s | 2.0 / 2.3 GB |
+| evaluate targeted (base + LoRA adapter) | 338 s | 19.3 s | 309 s | 0.22–0.54 problems/s | 2.0 / 2.4 GB |
+| report | < 5 s | — | — | — | — |
+
+- **Whole smoke run:** ~24 min. Disk: 109 MB under `runs/smoke/` (adapter 49.5 MB, `checkpoint-30` 58.6 MB,
+  data 0.4 MB) + 0.7 MB SQLite. Device memory seen by `nvidia-smi` peaked at 7.5 GB of 8 GB (during training, incl.
+  other processes).
+- **Thermals:** max GPU temperature 62 °C; SM clock while busy min 210 / mean 1193 / max 2655 MHz; mean power 19.5 W
+  (max 54 W). No HW thermal or power-brake slowdown was recorded.
+- **Inference is CPU-bound, not GPU-bound:** mean GPU utilisation while generating was only ~34 %. With a 0.6B model,
+  Hugging Face `generate` spends most of each token step in Python/kernel-launch overhead, so larger
+  `generation.batch_size` (e.g. 32–64) should raise throughput almost linearly at small VRAM cost — not yet measured.
+- **Extrapolation (a guess, not measured):** at ~0.4 problems/s, the full GSM8K test (1319) takes ~55 min per model
+  evaluation at 256 new tokens, longer at 700.
+- Smoke config gap: the eval grid has `steps ∈ {2, 4}`, so with the smoke target `steps` (threshold 4.0) the
+  "above threshold" slice is empty (`accuracy: null`). Plumbing only; the main config's grid covers it.

@@ -58,11 +58,21 @@ def from_items(items: Iterable[Item]) -> list[Example]:
     ]
 
 
+def _row_id(r: dict, i: int, id_prefix: str) -> str:
+    """GSM8K rows have no id (use the row index). GSM-Symbolic's `id` is the *template* id, shared by
+    all ~50 instances of a template (checked on the live dataset, 2026-10-04), so pair it with `instance`."""
+    if "id" not in r:
+        return f"{id_prefix}-{i}"
+    if "instance" in r:
+        return f"{id_prefix}-{r['id']}-{r['instance']}"
+    return str(r["id"])
+
+
 def _from_gsm_rows(rows: Iterable[dict], source: str, id_prefix: str) -> list[Example]:
     out = []
     for i, r in enumerate(rows):
         sol = r["answer"]
-        out.append(Example(id=str(r.get("id", f"{id_prefix}-{i}")), source=source,
+        out.append(Example(id=_row_id(r, i, id_prefix), source=source,
                            question=r["question"], answer=final_answer(sol), solution=sol,
                            meta={k: r[k] for k in ("original_id", "instance") if k in r}))
     return out

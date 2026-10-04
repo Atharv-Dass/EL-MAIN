@@ -130,6 +130,20 @@ def test_paired_bootstrap():
     assert same["mean_diff"] == 0 and same["p_value"] == 1.0
 
 
+def test_gsm_row_ids_are_unique():
+    """GSM-Symbolic's `id` is a template id shared by all instances; ids must pair it with `instance`
+    or responses (keyed by example_id) overwrite each other. GSM8K rows have no id: use the index."""
+    from dreammachine.data.loaders import _from_gsm_rows
+
+    sym = [{"id": t, "instance": k, "question": "q", "answer": "1 + 1 = 2\n#### 2", "original_id": 9}
+           for t in range(3) for k in range(4)]
+    ids = [e.id for e in _from_gsm_rows(sym, "gsm_symbolic:main", "gsmsym-main")]
+    assert len(set(ids)) == 12 and ids[5] == "gsmsym-main-1-1"
+    gsm = [{"question": "q", "answer": "#### 2"}] * 3
+    assert [e.id for e in _from_gsm_rows(gsm, "gsm8k", "gsm8k-test")] == ["gsm8k-test-0", "gsm8k-test-1",
+                                                                          "gsm8k-test-2"]
+
+
 def test_config_loads_yaml():
     for path in ("configs/main.yaml", "configs/smoke.yaml"):
         cfg = P.Config.load(path)
