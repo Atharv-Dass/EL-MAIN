@@ -3,7 +3,7 @@
 > **Read this whole file before you write any code.**
 > This is the single source of truth for *what* to build and *in what order*.
 > The API that the frontend will use is defined separately in `docs/API_CONTRACT.md`.
-> Version 1.0 — 2026-10-04. Repo: `https://github.com/yorudamn12/EL-MAIN`, branch `claude/wonderful-hypatia-pqs6t9`.
+> Version 1.1 — 2026-10-04 (review changes listed in section 15). Repo: `https://github.com/yorudamn12/EL-MAIN`, branch `claude/wonderful-hypatia-pqs6t9`.
 
 ---
 
@@ -104,7 +104,7 @@ training data** without the user's explicit OK.
 | D1 | **Novelty = targeting vs difficulty**, tested with the difficulty-matched control. "Small models on a laptop" is the setting, not the headline. |
 | D2 | Training problems are **made by code** (section 2.3). |
 | D3 | **One pipeline from benchmark to final comparison.** A single "pipeline run" goes: preflight → baseline benchmark → diagnose → choose target → build data → train → re-benchmark → compare. No manual steps in between. The old per-stage CLI commands stay for debugging only. |
-| D4 | **Backend only for now.** Frontend later, built by Manus AI from `docs/API_CONTRACT.md`. |
+| D4 | **Backend only for now.** Frontend later, built by Manus AI from `docs/API_CONTRACT.md`. Manus builds in the cloud and cannot reach `127.0.0.1` on the laptop, so it builds against the contract's **mock mode**; real data is only seen when the frontend runs on the same laptop as the backend (contract §2). |
 | D5 | **Compute = one laptop** (RTX 4060, 8 GB). API, worker and GPU all on `127.0.0.1`. No Colab, no cloud. |
 | D6 | **Two modes.** *Explore*: free choices, logged, never paper evidence. *Paper*: fixed protocol from `configs/main.yaml` (4 arms incl. matched control, 3 seeds, equal token budget), nothing can be changed except the model and the run name. |
 | D7 | The matched control is **mandatory in paper mode** and **on by default in explore mode** (the user may turn it off). |
@@ -182,6 +182,8 @@ The orchestrator **reuses the existing stage functions**. Do not rewrite their l
   `torch.cuda.is_available()`; free disk space under `runs/` and the Hugging Face cache; gated model access
   (try `huggingface_hub` model info; on 401/403 → error code `model_access_denied`); required datasets
   loadable (GSM8K, GSM-Symbolic) or local JSONL overrides present.
+- **Disk rule:** fail with `disk_low` if free space on the drive holding `runs/` is below `preflight.min_free_gb`
+  (default **10**, a starting guess — adjust after B1 measures real run sizes).
 - **Writes:** `runs/pipelines/<id>/config.resolved.yaml`, `provenance.json` (section 9.4).
 - **Fails with:** `gpu_unavailable`, `model_access_denied`, `dataset_unavailable`, `disk_low`, `validation_error`.
 
@@ -247,7 +249,13 @@ The orchestrator **reuses the existing stage functions**. Do not rewrite their l
 - **Windows:** `dataloader_num_workers=0`; no `torch.compile`; no Triton. If `load_in_4bit` is set but
   bitsandbytes cannot import or has no CUDA, raise a clear error suggesting `load_in_4bit: false`
   for ≤ 1.7B models (bf16 LoRA fits in 8 GB).
-- **Resume:** the trainer already resumes from `checkpoint-*` folders. A resumed pipeline must reuse them.
+- **Resume:** the trainer already resumes from `checkpoint-*` folders. A resumed pipeline must reuse them,
+  but **ignore any `checkpoint-*` folder without `trainer_state.json`** (it was cut off mid-write) — delete it and
+  resume from the newest complete one.
+- **Cancel:** the same TrainerCallback reads `cancel_requested` from the job row every `logging_steps` and sets
+  `control.should_training_stop = True`, so training stops cleanly at a step boundary (section 7.3).
+- **Cleanup:** after the final adapter is saved, delete the `checkpoint-*` folders unless
+  `train.keep_checkpoints: true` (default `false`). They are only needed to resume an unfinished run.
 
 ### S6 — evaluate:<arm key>
 - **What:** run the fine-tuned model (base + adapter) on the **same benchmarks** as S1.
@@ -255,6 +263,8 @@ The orchestrator **reuses the existing stage functions**. Do not rewrite their l
   `probes_train_families` and stores `eta`, and computes `…:target_slice` for probe benchmarks.
 - **Rule:** inference precision (`eval.load_in_4bit`) must be identical for base and fine-tuned models.
 - **Order:** the step list interleaves train → evaluate per arm key, so results appear early.
+- **Cancel:** the `progress` callback also checks `cancel_requested` between chunks and raises a `Cancelled`
+  exception, so evaluation stops cleanly between chunks (section 7.3).
 
 ### S7 — compare (the last stage)
 - **What:** build the final comparison: before vs after for every arm, arm vs arm, regressions, η change,
@@ -300,9 +310,19 @@ starting guesses; replace them with measured values after B1** and say so in a c
 The friend's flow is: test the model → see weaknesses → pick one → train. With a single pipeline, do it like
 this: run a **benchmark run** (baseline + diagnosis) or an explore pipeline, then start a new explore pipeline
 with `reuse_from: <that id>`. S1 and S2 are then marked `skipped` and their run ids are linked.
-Reuse is allowed only if **model, benchmark list, benchmark_limit, prompt version and the generation
-settings** are identical (compare a `baseline_hash` of those fields). Otherwise → `422 reuse_mismatch`.
-Paper pipelines never reuse.
+Reuse uses **two hashes**, both stored on every job:
+- `baseline_hash` = model + HF model revision + benchmark list + benchmark_limit + prompt version + generation
+  settings + eval precision (`eval.load_in_4bit`).
+- `diagnosis_hash` = model + HF model revision + prompt version + the whole `diagnose` config block (probe grid,
+  `probe_per_cell`, `n_samples`, `temperature`, `bootstrap`, seed) + eval precision.
+
+Rules:
+- S1 is skipped only if `baseline_hash` matches. S2 is skipped only if `diagnosis_hash` matches **and** the source
+  job has a finished diagnosis.
+- If the source is a benchmark run made **without** diagnosis (or with different diagnosis settings), the
+  baseline is reused and **diagnosis runs fresh** (S2 is not skipped). No error.
+- If `baseline_hash` does not match → `422 reuse_mismatch` (nothing worth reusing).
+- Paper pipelines never reuse.
 
 ---
 
@@ -314,7 +334,7 @@ Paper pipelines never reuse.
 - **Migration rule:** `CREATE TABLE IF NOT EXISTS` for new tables; for new columns on `runs`, check
   `PRAGMA table_info` and `ALTER TABLE ... ADD COLUMN` only if missing. Never drop data.
 - New table `jobs`: `id TEXT PK, kind TEXT ('pipeline'|'benchmark_run'), name TEXT, mode TEXT,
-  status TEXT, request TEXT(JSON), resolved TEXT(JSON), baseline_hash TEXT, config_hash TEXT,
+  status TEXT, request TEXT(JSON), resolved TEXT(JSON), baseline_hash TEXT, diagnosis_hash TEXT, config_hash TEXT,
   output_dir TEXT, reuse_from TEXT NULL, cancel_requested INTEGER DEFAULT 0, warnings TEXT(JSON),
   error TEXT(JSON) NULL, provenance TEXT(JSON), created_at REAL, started_at REAL NULL, finished_at REAL NULL`.
 - New table `job_steps`: `job_id TEXT, idx INTEGER, key TEXT, stage TEXT, params TEXT(JSON), status TEXT,
@@ -335,9 +355,13 @@ Paper pipelines never reuse.
   stdout/stderr to `runs/pipelines/<id>/logs/job.log` (append, utf-8).
 - **Why a subprocess per step:** GPU memory is fully freed after each step, and a crash fails one step,
   not the worker.
-- **Cancel:** API sets `cancel_requested=1`. The worker checks about every second; then
-  `Popen.terminate()`, wait up to 10 s, then `Popen.kill()`. Mark the step and job `cancelled`.
-  No POSIX signals (they do not work the same on Windows).
+- **Cancel (cooperative first, hard kill last):** the API sets `cancel_requested=1`. The running step checks this
+  flag itself at safe points (training: every `logging_steps` in the TrainerCallback; evaluation and diagnosis:
+  between chunks) and exits cleanly with status `cancelled`. The worker waits up to
+  `worker.cancel_grace_s` (default 120 s) for that. Only if the step is still alive after the grace period does the
+  worker call `Popen.kill()`.
+  **Why:** on Windows, `Popen.terminate()` is the same as `kill()` (an instant `TerminateProcess`), so "terminate,
+  then wait" gives no grace at all and can cut a checkpoint in half. No POSIX signals.
 - **Heartbeat:** update `worker_state.heartbeat_at` every ~5 s. The API reports the worker as down if the
   heartbeat is older than 30 s.
 - **Crash recovery:** on worker start, any step left `running` becomes `failed` with code `interrupted`,
@@ -356,6 +380,12 @@ Paper pipelines never reuse.
   `internal_error` with the traceback in the log, not in the API message.
 - Progress: S1/S6 use `evaluate(progress=...)` (already exists) → unit `examples`. S5 uses the new
   `TrainerCallback` → unit `steps`. S2 → `examples`. Others → 0/1.
+- Timing: every step that loads a model records `load_s` (model + adapter loading) and `run_s` (the actual work)
+  separately in `job_steps.metrics`. Each step is a new subprocess, so the model is loaded again every time; we
+  want to see how much of the total that costs.
+- ETA: `eta_s` for a job = for each unfinished step, the average duration of finished steps of the same stage in
+  this job (or, if none, in the most recent finished job with the same model), summed. `null` if no data yet.
+  It is a rough guide, not a promise.
 
 ### 7.5 Commands
 - `python -m dreammachine.jobs run --preset explore --model Qwen/Qwen3-0.6B [...]` — run a pipeline in the
@@ -369,6 +399,22 @@ Paper pipelines never reuse.
 - Keep the repo and `runs/` **outside OneDrive-synced folders** (e.g. `C:\dev\EL-MAIN`). Sync tools can lock or
   corrupt SQLite WAL files.
 - Use `sys.executable` to spawn subprocesses (the venv's Python).
+
+### 7.7 GPU telemetry (laptop thermals)
+One laptop does everything, so heat can slow the GPU down and distort timing numbers. While a step runs, the
+worker samples `nvidia-smi --query-gpu=temperature.gpu,clocks.sm,power.draw,utilization.gpu,memory.used
+--format=csv,noheader,nounits` every 30 s into `runs/pipelines/<id>/logs/gpu.csv` (with timestamp and step key),
+and writes a summary per step into `job_steps.metrics.gpu` = `{max_temp_c, min_sm_clock_mhz, max_memory_used_mb}`.
+No new dependency. If `nvidia-smi` is missing, skip silently and set the summary to `null`.
+
+### 7.8 Disk use and cleanup
+- Checkpoints are deleted after training finishes (S5 cleanup). Final adapters, data files, logs and results are kept.
+- The API reports `output_bytes` per job and free disk space in `GET /system`.
+- `DELETE` on a job removes its output folder and its rows (`jobs`, `job_steps`, and `runs`/`responses`/`artifacts`
+  linked by `job_id`). Allowed only for **explore pipelines and benchmark runs that are not queued or running**.
+  **Paper jobs cannot be deleted through the API** (`409 paper_protected`); delete them by hand if you really mean it.
+- A job that is the `reuse_from` source of another job can still be deleted; the other job keeps its own copies of
+  the reused run ids in its steps, but drill-down links to the deleted runs will return 404.
 
 ---
 
@@ -449,6 +495,10 @@ Use exactly the pairs in `report()`: `targeted − matched_control`, `targeted �
   missing), Python and package versions (torch, transformers, peft, bitsandbytes, datasets), seeds,
   `prompt_version`, GPU name, OS, and the Hugging Face model revision (commit sha; from `huggingface_hub`
   or the loaded model config).
+- Precision is part of provenance: `train.load_in_4bit`, `eval.load_in_4bit`, and whether bitsandbytes imported
+  with CUDA. There is **no automatic fallback** from QLoRA to plain LoRA: if 4-bit fails, the step fails with a clear
+  message (S5) and the user changes the config on purpose. Paper mode uses one fixed config, so all arms always share
+  the same precision. `compare_runs` adds a warning when the two runs used different precision.
 - `paper_eligible = (mode == "paper") and all steps done and no overrides and dirty == False`.
   If the working tree is dirty, the paper run still runs but is flagged `paper_eligible: false` with a warning.
 - Any "paper report" command must refuse explore jobs.
@@ -462,14 +512,14 @@ CPU-only milestones can be done without the GPU; B1 and B8 need the user at the 
 
 | # | Milestone | Done when |
 |---|---|---|
-| **B0** | **Windows hardening + project memory.** Add `encoding="utf-8"` to every `read_text`/`write_text`/`open` (today missing in `experiments/pipeline.py` lines with `screen.json`, `diagnosis.json`, `manifest.json`, `evals/*.json`, `report.json`, `report.md`, `Config.load`; and `train/qlora.py` `train_manifest.json`). `dataloader_num_workers=0`. Clear bitsandbytes error (S5). Regression test that writes `report.md` with `±` and `Δ` while Python's default encoding is forced to cp1252. Root `CLAUDE.md` (project memory: novelty, rules from section 0, branch, Windows conventions, "explore ≠ paper", pointers to docs). Replace WSL steps in `docs/RUNNING.md` with native Windows steps; fix "16 jobs" → 18. | `pytest -q` passes on Linux; user runs it on Windows. |
-| **B1** | **GPU smoke run (user present).** `configs/smoke.yaml` end to end with the existing CLI. Fix what breaks on Windows (bitsandbytes 4-bit path, real model output format, GSM-Symbolic fields). Record measured throughput (examples/s for eval, seconds/step for training, peak VRAM) in `docs/RUNNING.md`, replacing guesses. | Smoke run finishes; numbers written down. **No new features until this passes** for anything GPU-dependent. |
+| **B0** | **Windows hardening + project memory.** Add `encoding="utf-8"` to every `read_text`/`write_text`/`open` (today missing in `experiments/pipeline.py` lines with `screen.json`, `diagnosis.json`, `manifest.json`, `evals/*.json`, `report.json`, `report.md`, `Config.load`; and `train/qlora.py` `train_manifest.json`). `dataloader_num_workers=0`. Clear bitsandbytes error (S5). Regression test that writes `report.md` with `±` and `Δ` while Python's default encoding is forced to cp1252. Root `CLAUDE.md` (project memory: novelty, rules from section 0, branch, Windows conventions, "explore ≠ paper", pointers to docs, **the current API contract version and endpoint list** — updated whenever the contract changes). Replace WSL steps in `docs/RUNNING.md` with native Windows steps; fix "16 jobs" → 18. | `pytest -q` passes on Linux; user runs it on Windows. |
+| **B1** | **GPU smoke run (user present).** `configs/smoke.yaml` end to end with the existing CLI. Fix what breaks on Windows (bitsandbytes 4-bit path, real model output format, GSM-Symbolic fields). Record measured throughput (examples/s for eval, seconds/step for training, peak VRAM, **model-load time separately from run time**, GPU max temperature and lowest SM clock) and the disk size of one run in `docs/RUNNING.md`, replacing guesses. | Smoke run finishes; numbers written down. **No new features until this passes** for anything GPU-dependent. |
 | **B2** | **Benchmark module (M6)** + importer + extractors + prompt versions (section 8). `docs/BENCHMARKS.md`. | Tests: registry, plug-in loading, standalone CLI with `EchoRunner`, importer + 3 extractors + resume on a fixture, prompt-version separation. |
 | **B3** | **Store changes** (section 7.1) with migrations. Also: `get_responses` filters (`correct`, `error_type`, `source`) plus a matching count for pagination; `list_runs` filter by `job_id`. | Tests: new tables, migration on an old DB file adds columns without losing rows, WAL on, filters + counts. |
-| **B4** | **Pipeline orchestrator** (`dreammachine/jobs/steps.py`, `execute.py`, CLI `run`): step list, per-pipeline folder/name, S0–S7, reuse, `build_arm` split, `target.json`, TrainerCallback progress. | Tests with `SimulatedRunner`-style fake runner + tiny model: explore pipeline end to end; paper step list = 18 train + 18 eval; reuse skips S1–S2; reuse mismatch rejected; `untargeted` strategy forbids matched_control; `build_data` output byte-identical to before. |
-| **B5** | **Worker** (queue, subprocess per step, cancel, resume, heartbeat, crash recovery, logs). | Tests with a fake executor: queued → running → done; failure → failed; cancel; resume continues after the failed step; stale `running` step becomes `interrupted` on worker start. |
+| **B4** | **Pipeline orchestrator** (`dreammachine/jobs/steps.py`, `execute.py`, CLI `run`): step list, per-pipeline folder/name, S0–S7, reuse, `build_arm` split, `target.json`, TrainerCallback progress. | Tests with `SimulatedRunner`-style fake runner + tiny model: explore pipeline end to end; paper step list = 18 train + 18 eval; reuse skips S1–S2 only when both hashes match; reuse of a benchmark run without diagnosis skips S1 but runs S2; baseline mismatch rejected; `untargeted` strategy forbids matched_control; `build_data` output byte-identical to before. |
+| **B5** | **Worker** (queue, subprocess per step, cancel, resume, heartbeat, crash recovery, logs). | Tests with a fake executor: queued → running → done; failure → failed; cooperative cancel (step sees the flag and exits `cancelled`); a step that ignores the flag is hard-killed after the grace period; resume continues after the failed step; incomplete `checkpoint-*` folder is ignored on resume; stale `running` step becomes `interrupted` on worker start; delete refuses paper and running jobs. |
 | **B6** | **Comparison + results** (section 9) → `results.json`, `report.md`, `compare_runs`, provenance, `paper_eligible`. | Tests on stored fake eval runs: regression flag, pairs, η sign, explore never paper-eligible. |
-| **B7** | **API v1** exactly as `docs/API_CONTRACT.md`: all routes under `/api/v1`, pydantic response models, error envelope, CORS, ISO times, `python -m dreammachine.api.export_openapi` → `docs/openapi.json`, `python -m dreammachine.serve`. Move the old unprefixed routes under `/api/v1` with the contract's names (`/generate` → `/tools/generate`, `/diagnose` → `/tools/classify`, `/lltm/fit` → `/tools/lltm-fit`; no frontend depends on the old ones yet) and update `tests/test_api.py`. | Contract test passes; every endpoint has at least one TestClient test; `docs/openapi.json` is up to date. |
+| **B7** | **API v1** exactly as `docs/API_CONTRACT.md` (incl. 202-with-warning when the worker is down, `DELETE` rules from 7.8, dataset download, UTF-8-safe log chunks): all routes under `/api/v1`, pydantic response models, error envelope, CORS, ISO times, `python -m dreammachine.api.export_openapi` → `docs/openapi.json`, `python -m dreammachine.serve`. Move the old unprefixed routes under `/api/v1` with the contract's names (`/generate` → `/tools/generate`, `/diagnose` → `/tools/classify`, `/lltm/fit` → `/tools/lltm-fit`; no frontend depends on the old ones yet) and update `tests/test_api.py`. | Contract test passes; every endpoint has at least one TestClient test; `docs/openapi.json` is up to date. |
 | **B8** | **Real end-to-end on GPU (user present).** Start `serve`, `POST /api/v1/pipelines` explore run for `Qwen/Qwen3-0.6B` with `benchmark_limit: 50`; watch progress; read results. Also the prompt comparison (8.5). | Pipeline `done` on the GPU; results readable via API; numbers recorded. |
 
 After B8 (not in this phase): the paper run, then the frontend (Manus AI).
@@ -545,10 +595,27 @@ CONTRACT DIGEST (paste to advisor):
 
 ## 14. Open questions (do not decide these alone — ask the user)
 
-1. D8: confirm the headline result (aimed − matched on GSM8K / GSM-Symbolic) before editing `RESEARCH.md`.
-2. Match-quality thresholds that should **fail** a paper run (today: warnings only).
-3. Which research model after screening (Qwen3-0.6B, Qwen3-1.7B, Llama-3.2-1B, Gemma-3-1B, Qwen2.5-1.5B).
-4. Prompt choice `dm_v1` vs `v2_700` (needs the exact `v2_700` text from the friend).
-5. `docs/RESEARCH.md` cites "O'Grady & Ramlan (2026), arXiv 2607.18266". It could not be found online — the team
-   must check the link before citing it, or remove it.
-6. Before going public: LICENSE, `CITATION.cff`, GitHub Actions CI (Windows + Ubuntu running `pytest`).
+| # | Question | Needed before |
+|---|---|---|
+| 1 | D8: confirm the headline result (aimed − matched on GSM8K / GSM-Symbolic) before editing `RESEARCH.md`. | the paper run (the backend computes all versions anyway) |
+| 2 | Match-quality thresholds that should **fail** a paper run (today: warnings only). | the paper run |
+| 3 | Which research model after screening (Qwen3-0.6B, Qwen3-1.7B, Llama-3.2-1B, Gemma-3-1B, Qwen2.5-1.5B). | the paper run |
+| 4 | Exact `v2_700` prompt text from the friend. Until then the registry keeps a placeholder that raises a clear error; **never write your own version**. | the end of B2 for full tests of that prompt; the prompt comparison in B8 |
+| 5 | `docs/RESEARCH.md` cites "O'Grady & Ramlan (2026), arXiv 2607.18266". It could not be found online — the team must check it before citing, or remove it. | any paper draft |
+| 6 | Before going public: LICENSE, `CITATION.cff`, GitHub Actions CI (Windows + Ubuntu running `pytest`). | the public release |
+
+The model-size limit is **not** open: `docs/RESEARCH.md` already fixes it at ≤ 2B parameters.
+
+---
+
+## 15. Changes in version 1.1 (after an outside review)
+
+- Frontend reality: Manus cannot reach `127.0.0.1`; it builds against mock mode (D4, contract §2).
+- Cooperative cancel, because `Popen.terminate()` is a hard kill on Windows (7.3, S5, S6); incomplete checkpoints are
+  ignored on resume (S5).
+- Reuse now checks a separate `diagnosis_hash`; reusing a benchmark run without diagnosis runs diagnosis fresh (6.3).
+- Precision recorded in provenance; no automatic QLoRA → LoRA fallback (9.4).
+- Disk: `preflight.min_free_gb`, checkpoint cleanup, sizes in the API, delete for explore/benchmark jobs only (S0, 7.8).
+- Timing: `load_s` vs `run_s` per step, a simple ETA (7.4); GPU temperature/clock logging (7.7).
+- `CLAUDE.md` holds the contract version and endpoint list (B0); B1 records load time, thermals and run size.
+- Open questions now say which milestone they block (14).
