@@ -113,6 +113,18 @@ One measurement on one laptop: treat as a rough guide, not a benchmark.
 - **Inference is CPU-bound, not GPU-bound:** mean GPU utilisation while generating was only ~34 %. With a 0.6B model,
   Hugging Face `generate` spends most of each token step in Python/kernel-launch overhead, so larger
   `generation.batch_size` (e.g. 32–64) should raise throughput almost linearly at small VRAM cost — not yet measured.
+- **Token limit and batch size (measured after B1, dev slice = last 200 GSM8K *train* items, Qwen3-0.6B, dm_v1,
+  greedy, bf16):**
+
+  | max_new_tokens | batch_size | accuracy | answers cut off | problems/s | peak VRAM |
+  |---|---|---|---|---|---|
+  | 256 | 16 | 0.495 | 17.5 % | 0.40 | 2.0 GB |
+  | 512 | 16 | 0.560 | 0.5 % | 0.29 | 2.4 GB |
+  | **512** | **32** | **0.565** | **0 %** | **0.52** | 3.5 GB |
+
+  The configs now use 512 / 32. `batch_size` counts generated sequences (questions × `n_samples`), so the
+  diagnose stage (2–3 samples per question) stays within the same memory. Each answer records `truncated`
+  (hit the token limit); evaluation metrics include `<benchmark>:truncated_share`.
 - **Extrapolation (a guess, not measured):** at ~0.4 problems/s, the full GSM8K test (1319) takes ~55 min per model
   evaluation at 256 new tokens, longer at 700.
 - Smoke config gap: the eval grid has `steps ∈ {2, 4}`, so with the smoke target `steps` (threshold 4.0) the

@@ -38,6 +38,37 @@ def test_runner_generates_batched(tiny_model_dir):
     assert len(out) == 4 and all(len(s) == 2 and all(isinstance(x, str) for x in s) for s in out)
 
 
+def test_runner_flags_truncated_answers(tiny_model_dir):
+    from dreammachine.data import from_items
+    from dreammachine.experiments.evaluate import evaluate, summarize
+
+    items = generate_many(GenSpec(steps=2, digits=1), 3, seed=0)
+    runner = HFRunner(str(tiny_model_dir), gen=GenConfig(max_new_tokens=3, batch_size=2, n_samples=2,
+                                                         temperature=0.7))
+    recs = evaluate(runner, from_items(items))
+    # A random model almost never emits EOS within 3 tokens, so (nearly) every answer is cut off.
+    assert [len(s) for s in runner.last_truncated] == [2, 2, 2]  # per question, per sample (2 batches)
+    assert all(isinstance(r.diagnosis["truncated"], bool) for r in recs) and len(recs) == 6
+    assert summarize(recs)["truncated_share"] > 0.5
+    stub = HFRunner.from_objects(runner.model, runner.tokenizer, GenConfig(max_new_tokens=3))
+    assert runner.tokenizer.eos_token_id in stub._stop_ids()
+
+
+def test_batch_size_counts_sequences(tiny_model_dir, monkeypatch):
+    runner = HFRunner(str(tiny_model_dir), gen=GenConfig(max_new_tokens=2, batch_size=4, n_samples=2,
+                                                         temperature=0.7))
+    seen, real = [], runner.model.generate
+
+    def spy(**kw):
+        seen.append(kw["input_ids"].shape[0] * kw["num_return_sequences"])
+        return real(**kw)
+
+    monkeypatch.setattr(runner.model, "generate", spy)
+    out = runner.generate(["a b", "c d", "e f", "g h", "i j"])
+    assert len(out) == 5 and all(len(s) == 2 for s in out)
+    assert seen == [4, 4, 2]  # never more than batch_size sequences at once
+
+
 def test_train_saves_adapter_and_resumes_reload(tiny_model_dir, tmp_path):
     items = generate_many(GenSpec(steps=2, digits=1), 16, seed=0)
     exs = [TrainExample(it.question, clean_solution(it.solution), "syn", it.id) for it in items]

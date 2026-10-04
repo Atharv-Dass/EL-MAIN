@@ -39,14 +39,20 @@ def evaluate(runner: Runner, examples: list[Example], chunk: int = 64,
     for start in range(0, len(examples), chunk):
         batch = examples[start:start + chunk]
         outputs = runner.generate([ex.question for ex in batch])
-        for ex, samples in zip(batch, outputs):
+        # Runners that know it (HFRunner) report which answers hit max_new_tokens; a cut-off answer
+        # has no final line, so its error label says more about the token limit than the model.
+        cut = getattr(runner, "last_truncated", None)
+        for i, (ex, samples) in enumerate(zip(batch, outputs)):
             trace = ex.trace()
             for k, text in enumerate(samples):
                 d = classify(text, trace)
+                diag = d.to_dict()
+                if cut is not None:
+                    diag["truncated"] = bool(cut[i][k])
                 records.append(ResponseRecord(
                     example_id=ex.id, source=ex.source, sample=k, text=text,
                     correct=d.error_type is ErrorType.CORRECT, error_type=d.error_type.value,
-                    diagnosis=d.to_dict(), features=dict(ex.features)))
+                    diagnosis=diag, features=dict(ex.features)))
         if progress:
             progress(min(start + chunk, len(examples)), len(examples))
     return records
@@ -62,13 +68,17 @@ def summarize(records: list[ResponseRecord]) -> dict:
         if not r.correct:
             errors[r.error_type] += 1
     n_err = sum(errors.values())
-    return {
+    out = {
         "n_examples": len({r.example_id for r in records}),
         "n_responses": len(records),
         "accuracy": float(np.mean([r.correct for r in records])),
         "accuracy_by_source": {s: float(np.mean(v)) for s, v in sorted(by_source.items())},
         "error_distribution": {k: v / n_err for k, v in sorted(errors.items())} if n_err else {},
     }
+    flags = [r.diagnosis["truncated"] for r in records if "truncated" in r.diagnosis]
+    if flags:
+        out["truncated_share"] = float(np.mean(flags))
+    return out
 
 
 def item_counts(records: list[ResponseRecord], names: tuple[str, ...] = FEATURES

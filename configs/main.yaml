@@ -14,8 +14,10 @@ candidates:
 model: Qwen/Qwen3-1.7B                  # placeholder until screening is done
 
 generation:
-  max_new_tokens: 384
-  batch_size: 16          # lower to 8 if you run out of memory
+  # Measured on Qwen3-0.6B, RTX 4060, dev slice of 200 GSM8K-train items (2026-10-04):
+  # 256 tokens cut off 17.5% of answers (acc 0.495); 512 tokens cut off 0.5-0% (acc 0.56).
+  max_new_tokens: 512
+  batch_size: 32          # sequences per batch (questions x n_samples); 1.8x faster than 16. Lower if OOM.
   n_samples: 1
   temperature: 0.0
 

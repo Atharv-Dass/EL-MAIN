@@ -144,6 +144,16 @@ def test_gsm_row_ids_are_unique():
                                                                           "gsm8k-test-2"]
 
 
+def test_dev_holdout_is_disjoint_from_training(tmp_path):
+    exs = [Example(id=f"r{i}", source="gsm8k", question=f"q{i}", answer="1") for i in range(10)]
+    save_jsonl(exs, tmp_path / "real.jsonl")
+    cfg = P.Config(name="t", output_dir=str(tmp_path / "out"), real_data=str(tmp_path / "real.jsonl"))
+    assert P.dev_set(cfg) == [] and len(P._real_train(cfg)) == 10   # off by default: unchanged behaviour
+    cfg.data = {"dev_holdout": 3}
+    dev, train = {e.id for e in P.dev_set(cfg)}, {e.id for e in P._real_train(cfg)}
+    assert dev == {"r7", "r8", "r9"} and len(train) == 7 and not dev & train
+
+
 def test_config_loads_yaml():
     for path in ("configs/main.yaml", "configs/smoke.yaml"):
         cfg = P.Config.load(path)

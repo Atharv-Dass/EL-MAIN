@@ -43,7 +43,7 @@ class GenConfig:
     n_samples: int = 1
     temperature: float = 0.0   # 0 = greedy
     top_p: float = 0.95
-    batch_size: int = 16
+    batch_size: int = 16       # generated sequences per forward batch (questions x n_samples)
     seed: int = 0
 
 
@@ -95,9 +95,14 @@ class HFRunner:
         torch.manual_seed(g.seed)
         prompts = [format_prompt(q, self.tokenizer) for q in questions]
         out: list[list[str]] = []
-        n_batches = math.ceil(len(prompts) / g.batch_size)
+        self.last_truncated = []  # per question, per sample: hit max_new_tokens without a stop token
+        stop_ids = self._stop_ids()
+        # batch_size counts generated *sequences* (questions x n_samples), so memory stays bounded
+        # when sampling several answers per question (diagnose uses n_samples 2-3).
+        per_batch = max(1, g.batch_size // g.n_samples)
+        n_batches = math.ceil(len(prompts) / per_batch)
         for b in range(n_batches):
-            batch = prompts[b * g.batch_size:(b + 1) * g.batch_size]
+            batch = prompts[b * per_batch:(b + 1) * per_batch]
             enc = self.tokenizer(batch, return_tensors="pt", padding=True, add_special_tokens=False)
             enc = {k: v.to(self.model.device) for k, v in enc.items()}
             sample = g.temperature > 0
@@ -108,9 +113,21 @@ class HFRunner:
                     num_return_sequences=g.n_samples, pad_token_id=self.tokenizer.pad_token_id)
             new = ids[:, enc["input_ids"].shape[1]:]
             texts = self.tokenizer.batch_decode(new, skip_special_tokens=True)
+            full = new.shape[1] >= g.max_new_tokens
+            cut = [bool(full and int(row[-1]) not in stop_ids) for row in new]
             for i in range(len(batch)):
                 out.append(texts[i * g.n_samples:(i + 1) * g.n_samples])
+                self.last_truncated.append(cut[i * g.n_samples:(i + 1) * g.n_samples])
         return out
+
+    def _stop_ids(self) -> set[int]:
+        """Token ids that end a generation (EOS ids from the generation config and tokenizer, plus padding)."""
+        ids: set[int] = set()
+        for v in (getattr(getattr(self.model, "generation_config", None), "eos_token_id", None),
+                  self.tokenizer.eos_token_id, self.tokenizer.pad_token_id):
+            if v is not None:
+                ids.update(v if isinstance(v, (list, tuple)) else [v])
+        return ids
 
 
 class EchoRunner:

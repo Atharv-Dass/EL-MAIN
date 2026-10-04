@@ -93,10 +93,23 @@ def _examples(cfg: Config, key: str, loader: Callable[[], list[Example]]) -> lis
     return load_jsonl(path) if path else loader()
 
 
-def _real_train(cfg: Config) -> list[Example]:
+def _real_pool(cfg: Config) -> list[Example]:
     if cfg.real_data == "gsm8k":
         return _examples(cfg, "gsm8k_train", lambda: load_gsm8k("train"))
     return load_jsonl(cfg.real_data)
+
+
+def dev_set(cfg: Config) -> list[Example]:
+    """The last `data.dev_holdout` real training problems: a dev set for tuning settings (never GSM8K test)."""
+    n = int(cfg.data.get("dev_holdout", 0))
+    return _real_pool(cfg)[-n:] if n > 0 else []
+
+
+def _real_train(cfg: Config) -> list[Example]:
+    """Real training problems, minus the dev hold-out (if set) so tuning never evaluates on trained items."""
+    pool = _real_pool(cfg)
+    n = int(cfg.data.get("dev_holdout", 0))
+    return pool[:-n] if n > 0 else pool
 
 
 # -------------------------------------------------------------------- screen
@@ -305,7 +318,10 @@ def evaluate_model(cfg: Config, store: Store, runner_factory: RunnerFactory, arm
         for r in recs:
             r.source = name
         all_recs += recs
-        metrics[name] = summarize(recs)["accuracy"]
+        summ = summarize(recs)
+        metrics[name] = summ["accuracy"]
+        if "truncated_share" in summ:
+            metrics[f"{name}:truncated_share"] = summ["truncated_share"]
         if name.startswith("probes") and diag.get("target"):
             metrics[f"{name}:target_slice"] = slice_accuracy(recs, diag["target"]["feature"], diag["threshold"])
     store.add_responses(run, all_recs)
