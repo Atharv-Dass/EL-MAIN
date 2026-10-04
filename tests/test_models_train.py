@@ -46,10 +46,19 @@ def test_train_saves_adapter_and_resumes_reload(tiny_model_dir, tmp_path):
                       target_modules=["q_proj", "v_proj"])
     adapter = train(cfg, exs)
     assert (adapter / "adapter_config.json").exists()
-    manifest = (tmp_path / "run" / "train_manifest.json").read_text()
+    manifest = (tmp_path / "run" / "train_manifest.json").read_text(encoding="utf-8")
     assert '"n_examples": 16' in manifest
     runner = HFRunner(str(tiny_model_dir), adapter=str(adapter), gen=GenConfig(max_new_tokens=4))
     assert len(runner.generate(["Asha has 5 apples."])) == 1
+
+
+def test_4bit_without_cuda_gives_clear_error(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from dreammachine.models.runner import check_4bit_support
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(RuntimeError, match=r"train\.load_in_4bit: false"):
+        check_4bit_support("train.load_in_4bit")
 
 
 @pytest.mark.slow

@@ -81,8 +81,9 @@ def _load_model(cfg: TrainConfig):
     cuda = torch.cuda.is_available()
     kwargs: dict = {}
     if cfg.load_in_4bit:
-        if not cuda:
-            raise RuntimeError("load_in_4bit needs a CUDA GPU; set load_in_4bit: false for CPU smoke runs")
+        from ..models.runner import check_4bit_support
+
+        check_4bit_support("train.load_in_4bit")
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
@@ -130,6 +131,9 @@ def train(cfg: TrainConfig, examples: list[TrainExample]) -> Path:
     steps_per_epoch = math.ceil(len(data) / (cfg.per_device_batch_size * cfg.grad_accum))
     total_steps = cfg.max_steps if cfg.max_steps > 0 else math.ceil(steps_per_epoch * cfg.num_epochs)
     warmup_steps = int(round(cfg.warmup_ratio * total_steps))
+    # Windows: DataLoader worker processes are spawned (not forked) and gain nothing for
+    # pre-tokenised in-memory data, so keep loading in the main process. `extra` may override.
+    extra = {"dataloader_num_workers": 0, **cfg.extra}
     args = TrainingArguments(
         output_dir=str(out),
         per_device_train_batch_size=cfg.per_device_batch_size,
@@ -151,7 +155,7 @@ def train(cfg: TrainConfig, examples: list[TrainExample]) -> Path:
         remove_unused_columns=False,
         gradient_checkpointing=False,  # already enabled on the model where requested
         dataloader_pin_memory=cuda,
-        **cfg.extra,
+        **extra,
     )
     trainer = Trainer(model=model, args=args, train_dataset=data,
                       data_collator=_Collator(tokenizer.pad_token_id))
@@ -170,5 +174,5 @@ def train(cfg: TrainConfig, examples: list[TrainExample]) -> Path:
         "resumed": resume,
         "wall_seconds": time.time() - t0,
     }
-    (out / "train_manifest.json").write_text(json.dumps(manifest, indent=2))
+    (out / "train_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return adapter_dir

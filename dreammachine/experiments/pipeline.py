@@ -70,7 +70,7 @@ class Config:
     def load(cls, path: str | Path) -> "Config":
         import yaml
 
-        raw = yaml.safe_load(Path(path).read_text())
+        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
         return cls(**raw)
 
     @property
@@ -125,7 +125,7 @@ def screen(cfg: Config, store: Store, runner_factory: RunnerFactory) -> dict:
               and r["format_error_share"] < s.get("max_format_share", 0.2)]
     pick = max(usable, key=lambda r: 1 - r["gsm8k_accuracy"]) if usable else None
     result = {"candidates": rows, "recommended": pick["model"] if pick else None}
-    (cfg.out / "screen.json").write_text(json.dumps(result, indent=2))
+    (cfg.out / "screen.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
 
@@ -155,7 +155,7 @@ def diagnose(cfg: Config, store: Store, runner_factory: RunnerFactory) -> dict:
     for k, v in result.items():
         if k != "run_id":
             store.put_artifact(run, k, v)
-    (cfg.out / "diagnosis.json").write_text(json.dumps(result, indent=2))
+    (cfg.out / "diagnosis.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     _export_annotation_sheet(recs, from_items(probe_items), cfg.out / "annotate_errors.csv",
                              d.get("annotate", 150), d.get("seed", 0))
     store.finish_run(run, metrics={"accuracy": result["summary"]["accuracy"],
@@ -186,7 +186,7 @@ def _arm_path(cfg: Config, arm: str, ratio: float, seed: int) -> Path:
 
 def build_data(cfg: Config, store: Store) -> dict:
     dz = cfg.data
-    diag = json.loads((cfg.out / "diagnosis.json").read_text())
+    diag = json.loads((cfg.out / "diagnosis.json").read_text(encoding="utf-8"))
     if not diag["target"]:
         raise RuntimeError("diagnosis found no significant weakness; nothing to target")
     lltm = LLTMResult.from_dict(diag["lltm"])
@@ -226,7 +226,7 @@ def build_data(cfg: Config, store: Store) -> dict:
                 path = _arm_path(cfg, arm, ratio, seed)
                 _write_train(rows, path)
                 manifest["arms"][path.stem] = _arm_stats(rows)
-    (cfg.out / "data" / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    (cfg.out / "data" / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     run = store.create_run(f"{cfg.name}:build-data", "build-data", dz)
     store.put_artifact(run, "manifest", manifest)
     store.finish_run(run)
@@ -269,7 +269,7 @@ def train_arm(cfg: Config, store: Store, arm: str, ratio: float, seed: int) -> P
     except Exception as e:
         store.finish_run(run, status="failed", metrics={"error": repr(e)})
         raise
-    store.finish_run(run, metrics=json.loads((out / "train_manifest.json").read_text())["train_metrics"])
+    store.finish_run(run, metrics=json.loads((out / "train_manifest.json").read_text(encoding="utf-8"))["train_metrics"])
     return path
 
 
@@ -297,7 +297,7 @@ def evaluate_model(cfg: Config, store: Store, runner_factory: RunnerFactory, arm
     run = store.create_run(f"{cfg.name}:eval:{tag}", "eval",
                            {"arm": arm, "ratio": ratio, "seed": seed, "adapter": adapter})
     runner = runner_factory(cfg.model, adapter, cfg.gen())
-    diag = json.loads((cfg.out / "diagnosis.json").read_text())
+    diag = json.loads((cfg.out / "diagnosis.json").read_text(encoding="utf-8"))
     metrics: dict[str, Any] = {"arm": arm, "ratio": ratio, "seed": seed}
     all_recs: list[ResponseRecord] = []
     for name, exs in eval_sets(cfg).items():
@@ -316,7 +316,7 @@ def evaluate_model(cfg: Config, store: Store, runner_factory: RunnerFactory, arm
     metrics["eta"] = dict(zip(FEATURES, [None if np.isnan(x) else float(x) for x in lltm.eta]))
     store.finish_run(run, metrics=metrics)
     (cfg.out / "evals").mkdir(exist_ok=True)
-    (cfg.out / "evals" / f"{tag}.json").write_text(json.dumps({"run_id": run, **metrics}, indent=2))
+    (cfg.out / "evals" / f"{tag}.json").write_text(json.dumps({"run_id": run, **metrics}, indent=2), encoding="utf-8")
     return {"run_id": run, **metrics}
 
 
@@ -366,8 +366,8 @@ def report(cfg: Config, store: Store, ratio: float | None = None) -> dict:
             xb = np.array([np.mean(per_arm_item[b][src][i]) for i in ids])
             comparisons[f"{a} - {b} | {src}"] = paired_bootstrap(xa, xb)
     result = {"ratio": ratio, "arms": summary, "comparisons": comparisons}
-    (cfg.out / "report.json").write_text(json.dumps(result, indent=2))
-    (cfg.out / "report.md").write_text(_report_md(result))
+    (cfg.out / "report.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    (cfg.out / "report.md").write_text(_report_md(result), encoding="utf-8")
     return result
 
 

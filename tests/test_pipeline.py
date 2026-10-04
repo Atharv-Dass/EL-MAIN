@@ -91,7 +91,7 @@ def test_pipeline_end_to_end(env, tiny_model_dir):
 
     diag = P.diagnose(cfg, store, factory)
     assert diag["target"]["feature"] == "n_carry"
-    with (P.Path(cfg.output_dir) / "annotate_errors.csv").open(newline="") as f:
+    with (P.Path(cfg.output_dir) / "annotate_errors.csv").open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert len(rows) == 20 and all(r["annotator_1"] == "" for r in rows)
 
@@ -117,7 +117,7 @@ def test_pipeline_end_to_end(env, tiny_model_dir):
     rep = P.report(cfg, store)
     assert {"base", "real_only", "untargeted", "matched_control", "targeted"} <= set(rep["arms"])
     assert any(k.startswith("targeted - matched_control") for k in rep["comparisons"])
-    assert (P.Path(cfg.output_dir) / "report.md").read_text().startswith("# Results")
+    assert (P.Path(cfg.output_dir) / "report.md").read_text(encoding="utf-8").startswith("# Results")
 
 
 def test_paired_bootstrap():

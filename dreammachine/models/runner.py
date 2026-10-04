@@ -14,6 +14,24 @@ from typing import Protocol
 from .prompts import format_prompt
 
 
+def check_4bit_support(setting: str = "load_in_4bit") -> None:
+    """Fail early with a clear message if 4-bit (bitsandbytes NF4) cannot run here.
+    There is no silent fallback to bf16: precision is part of the experiment (PLAN.md 9.4)."""
+    import torch
+
+    hint = (f"Set `{setting}: false` instead: models up to ~1.7B fit in 8 GB in bf16 "
+            "(plain LoRA for training).")
+    if not torch.cuda.is_available():
+        raise RuntimeError(f"{setting} needs a CUDA GPU, but torch.cuda.is_available() is False. {hint}")
+    try:
+        import bitsandbytes.functional as bnb_f
+
+        bnb_f.quantize_4bit(torch.zeros(64, 64, device="cuda", dtype=torch.bfloat16), quant_type="nf4")
+    except Exception as e:  # ImportError, or a bitsandbytes build without CUDA kernels
+        raise RuntimeError(f"{setting} is set, but bitsandbytes cannot run 4-bit on this GPU "
+                           f"({type(e).__name__}: {e}). {hint}") from e
+
+
 class Runner(Protocol):
     def generate(self, questions: list[str]) -> list[list[str]]:
         """For each question, return n_samples completions."""
@@ -43,6 +61,7 @@ class HFRunner:
 
         kwargs: dict = {}
         if load_in_4bit:
+            check_4bit_support("eval.load_in_4bit")
             from transformers import BitsAndBytesConfig
             kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,

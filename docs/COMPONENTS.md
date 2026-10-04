@@ -26,9 +26,9 @@ without asking first. Every component names the command that verifies it.
 | C11 | Human-agreement tools (κ, confusion, stratified sample) | `dreammachine/diagnosis/agreement.py` | IMPLEMENTED | `pytest tests/test_diagnosis.py -k "kappa or stratified"` | |
 | C4b | Factorial probe sets, natural prior, selection pools | `dreammachine/generator/probes.py` | IMPLEMENTED | `pytest tests/test_lltm_targeting.py` | Natural prior weights are a guess at GSM8K; calibrate on real data |
 | C12 | Dataset loaders (GSM8K, GSM-Symbolic, JSONL) + equal-token-budget mixer | `dreammachine/data/` | IMPLEMENTED | `pytest tests/test_pipeline.py` | GSM-Symbolic field names unverified against the live dataset |
-| C13 | Shared prompt format + batched HF runner (4-bit/LoRA optional) | `dreammachine/models/` | IMPLEMENTED | `pytest tests/test_models_train.py` | CPU-verified on a tiny model; needs a real-GPU smoke run |
-| C14 | QLoRA trainer (completion-only loss, resume, manifest) | `dreammachine/train/` | IMPLEMENTED | `pytest tests/test_models_train.py -k "train or overfit"` | 4-bit path only runs on GPU; verify with configs/smoke.yaml |
-| C15 | Experiment stages + CLI + configs | `dreammachine/experiments/`, `configs/` | IMPLEMENTED | `pytest tests/test_pipeline.py` | Recovers a planted weakness end to end |
+| C13 | Shared prompt format + batched HF runner (4-bit/LoRA optional) | `dreammachine/models/` | IMPLEMENTED | `pytest tests/test_models_train.py` | CPU-verified on a tiny model; needs a real-GPU smoke run. B0: clear error if 4-bit cannot run (`check_4bit_support`) |
+| C14 | QLoRA trainer (completion-only loss, resume, manifest) | `dreammachine/train/` | IMPLEMENTED | `pytest tests/test_models_train.py -k "train or overfit"` | 4-bit path only runs on GPU; verify with configs/smoke.yaml. B0: `dataloader_num_workers=0`, clear bitsandbytes error |
+| C15 | Experiment stages + CLI + configs | `dreammachine/experiments/`, `configs/` | IMPLEMENTED | `pytest tests/test_pipeline.py` | Recovers a planted weakness end to end. B0: UTF-8 file I/O (`pytest tests/test_windows.py`) |
 | C16 | Results store (stdlib SQLite) | `dreammachine/store/` | IMPLEMENTED | `pytest tests/test_api.py -k runs` | Plain sqlite3 instead of SQLModel (zero dependencies) |
 | C17 | FastAPI backend | `dreammachine/api/` | IMPLEMENTED | `pytest tests/test_api.py` | Serves results; GPU jobs stay on the CLI |
 

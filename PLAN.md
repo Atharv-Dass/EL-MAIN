@@ -454,8 +454,8 @@ only"); greedy; `max_new_tokens=700`; batch 16; resumable append-only JSONL that
   (first number — reproduces theirs, for measuring disagreement only). No bare `except:`.
 - **Prompts:** in `models/prompts.py` register `PROMPTS = {"dm_v1": <current INSTRUCTION>, "v2_700": ...}` and
   add `prompt_version` (default `"dm_v1"`) to `format_prompt`/`build_messages`, config, and provenance.
-  **We do not have the exact `v2_700` text.** Leave it as a placeholder that raises a clear error until the
-  user pastes the exact text. Do not write your own version of it.
+  **Update 2026-10-04:** the exact `v2_700` text was received (open question 4 resolved); it is in `CLAUDE.md`
+  under "Prompt versions". Copy it byte-for-byte; never write your own version of it.
 - **Choosing the prompt (on GPU, B1/B8):** run both on the same 200 GSM8K items; compare FORMAT_ERROR rate and
   UNVERIFIABLE rate. `dm_v1` is favoured because the error classifier needs written equations, unless it costs
   accuracy. The team decides.
@@ -600,7 +600,7 @@ CONTRACT DIGEST (paste to advisor):
 | 1 | D8: confirm the headline result (aimed − matched on GSM8K / GSM-Symbolic) before editing `RESEARCH.md`. | the paper run (the backend computes all versions anyway) |
 | 2 | Match-quality thresholds that should **fail** a paper run (today: warnings only). | the paper run |
 | 3 | Which research model after screening (Qwen3-0.6B, Qwen3-1.7B, Llama-3.2-1B, Gemma-3-1B, Qwen2.5-1.5B). | the paper run |
-| 4 | Exact `v2_700` prompt text from the friend. Until then the registry keeps a placeholder that raises a clear error; **never write your own version**. | the end of B2 for full tests of that prompt; the prompt comparison in B8 |
+| 4 | ~~Exact `v2_700` prompt text from the friend.~~ **RESOLVED — text received 2026-10-04**, recorded verbatim in `CLAUDE.md` ("Prompt versions"); registered in B2 as `PROMPTS["v2_700"]` (SYSTEM message). | — |
 | 5 | `docs/RESEARCH.md` cites "O'Grady & Ramlan (2026), arXiv 2607.18266". It could not be found online — the team must check it before citing, or remove it. | any paper draft |
 | 6 | Before going public: LICENSE, `CITATION.cff`, GitHub Actions CI (Windows + Ubuntu running `pytest`). | the public release |
 
