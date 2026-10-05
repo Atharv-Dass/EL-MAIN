@@ -112,6 +112,7 @@ training data** without the user's explicit OK.
 | D9 | The friend's benchmark code is adopted through the benchmark module (section 8), with the answer-extraction bug fixed. |
 | D10 | **One prompt for the whole project** (benchmark, diagnosis, training, evaluation). Two candidate versions are registered (`dm_v1` = ours, `v2_700` = friend's); the choice is made on the first GPU run (section 8.5). Default stays `dm_v1`. |
 | D11 | Native Windows, no WSL. Public GitHub release later, so the README must hold a complete, safe install guide. |
+| D13 | **PROPOSED (2026-10-05, user delegated the choice):** keep the two Qwen3 models as the core (clean size comparison within one family). Add `meta-llama/Llama-3.2-1B-Instruct` as a third, cross-family model **if** a dev-slice benchmark (dm_v1 + boxed, ~45 min GPU) shows it is usable — it answers "is it Qwen-specific?" (Qwen models train on a lot of math data). Its paper run (full or a reduced 12-training protocol without the ratio sweep) is decided after B8. `Qwen/Qwen2.5-1.5B-Instruct` stays out of the paper (same vendor, size overlaps Qwen3-1.7B); the importer covers the friend's results without re-running it. |
 | D12 | **Two research models: `Qwen/Qwen3-0.6B` and `Qwen/Qwen3-1.7B`** (decided by the user, 2026-10-05), so results can be compared across model size. Each model gets its own paper run (paper mode already takes `model` per pipeline). `docs/RESEARCH.md` §4 still says "choose the model" (singular): the team must update it (protected file). |
 
 ---
