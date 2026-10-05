@@ -125,7 +125,60 @@ One measurement on one laptop: treat as a rough guide, not a benchmark.
   The configs now use 512 / 32. `batch_size` counts generated sequences (questions × `n_samples`), so the
   diagnose stage (2–3 samples per question) stays within the same memory. Each answer records `truncated`
   (hit the token limit); evaluation metrics include `<benchmark>:truncated_share`.
+- **Batch 64 does not fit:** at 512 tokens it filled 7.75 of 8.19 GB and was still unfinished after 26 min
+  (batch 32: 6.5 min). See "GPU memory spill" below.
 - **Extrapolation (a guess, not measured):** at ~0.4 problems/s, the full GSM8K test (1319) takes ~55 min per model
   evaluation at 256 new tokens, longer at 700.
 - Smoke config gap: the eval grid has `steps ∈ {2, 4}`, so with the smoke target `steps` (threshold 4.0) the
   "above threshold" slice is empty (`accuracy: null`). Plumbing only; the main config's grid covers it.
+
+## 7. Accuracy exploration: models, prompts, decoding — GPU-verified, EXPLORE ONLY (2026-10-04/05)
+**Not paper evidence.** Run with throwaway scripts (kept in `runs/dev_explore/`, git-ignored), no provenance.
+For the paper's settings-selection table, re-run through the benchmark module (B2/B8) with provenance.
+
+Dev set: the last 200 GSM8K **train** problems (never GSM8K test). Scored with the repo's own
+`classify` / `extract_answer`. bf16, RTX 4060 Laptop, native Windows. "Boxed" = the prompt recommended in the
+Qwen3 model card (Best Practices): *"Please reason step by step, and put your final answer within \boxed{}."*
+appended to the question in the user turn. Thinking mode uses the model card's sampling (T=0.6, top-p 0.95,
+top-k 20; greedy is discouraged there). Majority vote = 5 samples at T=0.7, top-p 0.8, top-k 20.
+
+| Model | Prompt | Decoding | Accuracy | Cut off | Mean tokens | Time / 200 |
+|---|---|---|---|---|---|---|
+| Qwen3-0.6B | dm_v1 | greedy, 512 tok | 0.565 | 0 % | 191 | 6 min |
+| Qwen3-0.6B | **boxed** | greedy, 512 tok | **0.705** | 2 % | 254 | 8 min |
+| Qwen3-0.6B | dm_v1 | thinking, 2048 tok | 0.590 | 14 % | 934 | 120 min |
+| Qwen3-0.6B | boxed | thinking, 2048 tok | 0.720 | 27.5 % | 1325 | 129 min |
+| Qwen3-0.6B | dm_v1 | majority of 5, 512 tok | 0.635 | 0.5 % | 193 | 37 min |
+| Qwen3-1.7B | dm_v1 | greedy, 512 tok | 0.790 | 1.5 % | 242 | 11 min |
+| Qwen3-1.7B | **boxed** | greedy, 512 tok | **0.860** | 2.5 % | 293 | 13 min |
+| Qwen3-1.7B | dm_v1 | thinking, 2048 tok | 0.840 | 16 % | 1031 | 224 min |
+| Qwen3-1.7B | boxed | thinking, 2048 tok | 0.785 | 31.5 % | 1540 | 266 min |
+| Qwen3-1.7B | dm_v1 | majority of 5, 512 tok | 0.840 | 2 % | 241 | 67 min |
+
+Paired bootstrap on the same 200 problems (difference, 95% CI):
+- boxed − dm_v1 (greedy): 0.6B **+0.140** [+0.075, +0.205]; 1.7B **+0.070** [+0.015, +0.125].
+- 1.7B − 0.6B (greedy): dm_v1 +0.225 [+0.155, +0.295]; boxed +0.155 [+0.090, +0.225].
+- thinking − greedy: 0.6B dm_v1 +0.025 [−0.055, +0.105]; 0.6B boxed +0.015 [−0.055, +0.085];
+  1.7B dm_v1 +0.050 [−0.015, +0.115]; 1.7B boxed **−0.075** [−0.135, −0.015] (31.5 % of answers hit the limit).
+- majority-of-5 − greedy (dm_v1): 0.6B +0.070 [+0.015, +0.125]; 1.7B +0.050 [+0.015, +0.085].
+- boxed greedy − dm_v1 majority-of-5: 0.6B +0.070 [+0.005, +0.135]; 1.7B +0.020 [−0.030, +0.070].
+
+Reading (for the team to decide; nothing in the configs was changed for this):
+- **The boxed prompt is the biggest cheap gain** on both models, at ~1.2–1.3× the time of dm_v1.
+- **Thinking mode is not worth it here:** no significant gain anywhere, a loss on 1.7B + boxed, ~15–20× the
+  time, and the error classifier cannot see the stripped thinking text.
+- **Majority voting helps dm_v1 but costs 5×**, and boxed greedy is as good or better.
+- Switching the project prompt to "boxed" is a D10 decision: training completions would then end with
+  `\boxed{n}` instead of `#### n`, and dm_v1's request to write every calculation as an equation (which the
+  error classifier relies on) would be gone. UNVERIFIABLE shares did not rise with boxed in these runs.
+- Model choice (open question 3): 1.7B is more accurate but leaves fewer errors to diagnose and fix.
+
+## 8. GPU memory spill on Windows (measured)
+When a batch needs more than the 8 GB of dedicated VRAM, Windows does **not** raise out-of-memory: it moves the
+overflow into shared system RAM and the run becomes many times slower (seen: thinking mode, Qwen3-0.6B, batch 16,
+2048 tokens → 4.3 GB in shared memory, no result after ~2 h; batch 64 at 512 tokens likewise). Check with
+`Get-Counter '\GPU Process Memory(*)\Shared Usage'`. Remedies used here: smaller batches (thinking: 0.6B batch 8,
+1.7B batch 4, both stayed in VRAM) and `torch.cuda.set_per_process_memory_fraction(0.92)` so an oversized batch
+fails with a clear OOM instead. Proposed for B4/B5: the same cap in step subprocesses, so a pipeline step fails fast
+rather than crawling. (Alternative: NVIDIA Control Panel → "CUDA - Sysmem Fallback Policy" → "Prefer No Sysmem
+Fallback"; a system setting for the user.)
