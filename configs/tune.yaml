@@ -1,0 +1,18 @@
+# Dev-set tuning of the training settings (PLAN.md §14 question 7: GSM8K got worse after training in B1 and B8).
+#   python -m dreammachine.experiments.tune --config configs/tune.yaml
+# EXPLORE ONLY. The dev set = the last 200 GSM8K *train* problems, removed from the training data; GSM8K test is
+# never used here. Reuses the B8 diagnosis (target `steps`, threshold 4.0) of job 5a584e16390b.
+base: configs/explore.yaml
+model: Qwen/Qwen3-0.6B
+seed: 0
+dev_holdout: 200
+diagnosis_from: runs/pipelines/5a584e16390b
+output_dir: runs/tuning/qwen06
+eval:
+  probes_heldout_families: 100      # held-out probe problems: does the target-side gain survive?
+variants:
+  - {name: current_lr2e-4_ep2_r3, arm: targeted, ratio: 3}                                   # the B8 settings
+  - {name: lr5e-5_ep2_r3,         arm: targeted, ratio: 3, train: {learning_rate: 5.0e-5}}
+  - {name: lr1e-4_ep1_r3,         arm: targeted, ratio: 3, train: {learning_rate: 1.0e-4, num_epochs: 1}}
+  - {name: lr2e-4_ep2_r1,         arm: targeted, ratio: 1}                                   # more real data
+  - {name: real_only_lr2e-4_ep2,  arm: real_only}                                            # diagnostic: no synthetic data

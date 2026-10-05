@@ -1,0 +1,181 @@
+"""Tune training settings on the dev set (PLAN.md §14 question 7). EXPLORE ONLY: never paper evidence.
+
+    python -m dreammachine.experiments.tune --config configs/tune.yaml
+
+The dev set is the last `dev_holdout` GSM8K *train* problems; they are removed from the real training data
+(`data.dev_holdout`), so the evaluation never sees a trained-on problem, and GSM8K test is never touched.
+Each variant = one arm trained with its own settings, then evaluated on the dev set and a held-out probe set,
+paired against the untrained model on the same problems. An existing diagnosis (target + LLTM) is reused.
+Resumable: finished variants (results/<name>.json) are skipped; training resumes from its last checkpoint.
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import shutil
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+import numpy as np
+
+from ..benchmarks import registry
+from ..store.db import Store
+from . import pipeline as P
+from .evaluate import evaluate, slice_accuracy, summarize
+
+
+def _item_correct(recs) -> dict[str, float]:
+    per: dict[str, list[float]] = {}
+    for r in recs:
+        per.setdefault(r.example_id, []).append(float(r.correct))
+    return {k: float(np.mean(v)) for k, v in per.items()}
+
+
+def _vs(a: dict[str, float], b: dict[str, float]) -> dict:
+    ids = sorted(set(a) & set(b))
+    return P.paired_bootstrap(np.array([a[i] for i in ids]), np.array([b[i] for i in ids]))
+
+
+def eval_sets(cfg: P.Config, spec: dict) -> dict[str, list]:
+    sets = {"dev": P.dev_set(cfg)}
+    n_probe = spec.get("probes_heldout_families")
+    if n_probe:
+        sets["probes_heldout_families"] = registry.get("probes_heldout_families").load(
+            limit=int(n_probe), **{k: v for k, v in P.benchmark_options(cfg, "probes_heldout_families").items()
+                                   if k != "limit"})
+    return sets
+
+
+def run_eval(cfg: P.Config, factory: P.RunnerFactory, adapter: str | None, sets: dict, target: dict) -> dict:
+    runner = factory(cfg.model, adapter, cfg.gen())
+    out: dict[str, Any] = {}
+    for name, exs in sets.items():
+        recs = evaluate(runner, exs)
+        s = summarize(recs)
+        out[name] = {"accuracy": s["accuracy"], "items": _item_correct(recs),
+                     "error_distribution": s["error_distribution"], "truncated_share": s.get("truncated_share"),
+                     "mean_chars": float(np.mean([len(r.text) for r in recs]))}
+        if name.startswith("probes") and target.get("feature"):
+            out[name]["target_slice"] = slice_accuracy(recs, target["feature"], target["threshold"])
+    return out
+
+
+def tune(config_path: str | Path, factory: P.RunnerFactory | None = None, log: Callable[[str], None] = print) -> dict:
+    import yaml
+
+    spec = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    base = P.Config.load(spec["base"])
+    base.model, base.mode = spec["model"], "explore"
+    base.seeds = [int(spec.get("seed", 0))]
+    base.data = {**base.data, "dev_holdout": int(spec.get("dev_holdout", 200))}
+    root = Path(spec["output_dir"])
+    (root / "results").mkdir(parents=True, exist_ok=True)
+    src = Path(spec["diagnosis_from"])
+    store = Store(spec.get("db", str(root / "tune.db")))
+    if factory is None:
+        from functools import partial
+
+        factory = partial(P.hf_runner_factory, load_in_4bit=bool(base.eval.get("load_in_4bit", False)))
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.set_per_process_memory_fraction(float(base.gpu.get("memory_fraction", 0.92)))
+        except ImportError:
+            pass
+
+    def variant_cfg(name: str, v: dict) -> P.Config:
+        cfg = copy.deepcopy(base)
+        cfg.name, cfg.output_dir = f"tune:{name}", str(root / name)
+        cfg.train = {**cfg.train, **v.get("train", {})}
+        ratio = float(v.get("ratio", 3))
+        if v["arm"] != "real_only":
+            cfg.data = {**cfg.data, "ratios": [ratio], "main_ratio": ratio}
+        for f in ("diagnosis.json", "target.json"):
+            if (src / f).exists() and not (cfg.out / f).exists():
+                shutil.copy2(src / f, cfg.out / f)
+        return cfg
+
+    target = json.loads((src / "target.json").read_text(encoding="utf-8")) if (src / "target.json").exists() else {}
+    base_cfg = variant_cfg("base", {"arm": "base"})
+    sets = eval_sets(base_cfg, spec.get("eval", {}))
+    log(f"dev set: {len(sets['dev'])} GSM8K-train problems (excluded from training); "
+        f"probes: {len(sets.get('probes_heldout_families', []))}")
+    base_file = root / "results" / "base.json"
+    if base_file.exists():
+        base_res = json.loads(base_file.read_text(encoding="utf-8"))
+    else:
+        t = time.time()
+        base_res = {"name": "base", "eval": run_eval(base_cfg, factory, None, sets, target), "eval_s": time.time() - t}
+        base_file.write_text(json.dumps(base_res, indent=2), encoding="utf-8")
+    log(f"base: dev {base_res['eval']['dev']['accuracy']:.3f}")
+
+    results = {"base": base_res}
+    for v in spec["variants"]:
+        name = v["name"]
+        out_file = root / "results" / f"{name}.json"
+        if out_file.exists():
+            results[name] = json.loads(out_file.read_text(encoding="utf-8"))
+            log(f"{name}: already done")
+            continue
+        cfg = variant_cfg(name, v)
+        arm, ratio = v["arm"], 0.0 if v["arm"] == "real_only" else float(v.get("ratio", 3))
+        t0 = time.time()
+        stats = P.build_data(cfg, store, arms=[(arm, ratio)])
+        t1 = time.time()
+        adapter = P.train_arm(cfg, store, arm, ratio, cfg.seeds[0])
+        t2 = time.time()
+        ev = run_eval(cfg, factory, str(adapter), sets, target)
+        t3 = time.time()
+        res = {"name": name, "arm": arm, "ratio": ratio, "train": cfg.train, "data": stats["arms"],
+               "eval": ev, "build_s": t1 - t0, "train_s": t2 - t1, "eval_s": t3 - t2,
+               "vs_base": {k: _vs(ev[k]["items"], base_res["eval"][k]["items"]) for k in ev}}
+        out_file.write_text(json.dumps(res, indent=2), encoding="utf-8")
+        results[name] = res
+        d = res["vs_base"]["dev"]
+        log(f"{name}: dev {ev['dev']['accuracy']:.3f} ({d['mean_diff']:+.3f} [{d['ci_low']:+.3f}, {d['ci_high']:+.3f}]) "
+            f"train {res['train_s'] / 60:.0f} min")
+    summary = summarise(results)
+    (root / "summary.md").write_text(summary, encoding="utf-8")
+    log(summary)
+    return results
+
+
+def summarise(results: dict) -> str:
+    base = results["base"]["eval"]
+    lines = ["# Dev-set tuning (EXPLORE — not paper evidence)", "",
+             "| variant | arm | ratio | lr | epochs | dev acc | Δ dev vs base [95% CI] | probes acc | Δ probes | "
+             "target slice above (before → after) | mean answer chars | train min |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    b = base["dev"]
+    pb = base.get("probes_heldout_families", {})
+    lines.append(f"| base | — | — | — | — | {b['accuracy']:.3f} | — | {pb.get('accuracy', float('nan')):.3f} | — | "
+                 f"{(pb.get('target_slice') or {}).get('above', {}).get('accuracy')} | {b['mean_chars']:.0f} | — |")
+    for name, r in results.items():
+        if name == "base":
+            continue
+        e, vs = r["eval"], r["vs_base"]
+        d, p = vs["dev"], vs.get("probes_heldout_families")
+        ts = (e.get("probes_heldout_families", {}).get("target_slice") or {}).get("above", {}).get("accuracy")
+        ts0 = (pb.get("target_slice") or {}).get("above", {}).get("accuracy")
+        lines.append(
+            f"| {name} | {r['arm']} | {r['ratio']:g} | {r['train'].get('learning_rate')} | {r['train'].get('num_epochs')} "
+            f"| {e['dev']['accuracy']:.3f} | {d['mean_diff']:+.3f} [{d['ci_low']:+.3f}, {d['ci_high']:+.3f}] "
+            f"| {e.get('probes_heldout_families', {}).get('accuracy', float('nan')):.3f} "
+            f"| {p['mean_diff']:+.3f} | {ts0} → {ts} | {e['dev']['mean_chars']:.0f} | {r['train_s'] / 60:.0f} |"
+            if p else f"| {name} | {r['arm']} | {r['ratio']:g} | | | {e['dev']['accuracy']:.3f} | {d['mean_diff']:+.3f} | | | | | |")
+    return "\n".join(lines) + "\n"
+
+
+def main(argv: list[str] | None = None) -> None:
+    p = argparse.ArgumentParser(prog="python -m dreammachine.experiments.tune", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--config", required=True)
+    tune(p.parse_args(argv).config, log=lambda s: print(s, flush=True))
+
+
+if __name__ == "__main__":
+    main()
