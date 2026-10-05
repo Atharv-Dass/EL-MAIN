@@ -112,6 +112,7 @@ training data** without the user's explicit OK.
 | D9 | The friend's benchmark code is adopted through the benchmark module (section 8), with the answer-extraction bug fixed. |
 | D10 | **One prompt for the whole project** (benchmark, diagnosis, training, evaluation). Two candidate versions are registered (`dm_v1` = ours, `v2_700` = friend's); the choice is made on the first GPU run (section 8.5). Default stays `dm_v1`. |
 | D11 | Native Windows, no WSL. Public GitHub release later, so the README must hold a complete, safe install guide. |
+| D12 | **Two research models: `Qwen/Qwen3-0.6B` and `Qwen/Qwen3-1.7B`** (decided by the user, 2026-10-05), so results can be compared across model size. Each model gets its own paper run (paper mode already takes `model` per pipeline). `docs/RESEARCH.md` §4 still says "choose the model" (singular): the team must update it (protected file). |
 
 ---
 
@@ -599,7 +600,7 @@ CONTRACT DIGEST (paste to advisor):
 |---|---|---|
 | 1 | D8: confirm the headline result (aimed − matched on GSM8K / GSM-Symbolic) before editing `RESEARCH.md`. | the paper run (the backend computes all versions anyway) |
 | 2 | Match-quality thresholds that should **fail** a paper run (today: warnings only). | the paper run |
-| 3 | Which research model after screening (Qwen3-0.6B, Qwen3-1.7B, Llama-3.2-1B, Gemma-3-1B, Qwen2.5-1.5B). | the paper run |
+| 3 | ~~Which research model after screening.~~ **RESOLVED 2026-10-05 (D12):** both Qwen3-0.6B and Qwen3-1.7B, to study the effect of model size. Dev-slice measurements in `docs/RUNNING.md` §7. | — |
 | 4 | ~~Exact `v2_700` prompt text from the friend.~~ **RESOLVED — text received 2026-10-04**, recorded verbatim in `CLAUDE.md` ("Prompt versions"); registered in B2 as `PROMPTS["v2_700"]` (SYSTEM message). | — |
 | 5 | `docs/RESEARCH.md` cites "O'Grady & Ramlan (2026), arXiv 2607.18266". It could not be found online — the team must check it before citing, or remove it. | any paper draft |
 | 6 | Before going public: LICENSE, `CITATION.cff`, GitHub Actions CI (Windows + Ubuntu running `pytest`). | the public release |

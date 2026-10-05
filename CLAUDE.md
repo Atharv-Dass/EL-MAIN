@@ -33,6 +33,11 @@ but hard for a different reason. Science: `docs/RESEARCH.md`. Status of parts: `
 - 4-bit needs bitsandbytes with CUDA; `check_4bit_support` raises a clear error, never a silent fallback.
 - The API binds to `127.0.0.1` only.
 
+## Research models (PLAN.md D12)
+Both `Qwen/Qwen3-0.6B` and `Qwen/Qwen3-1.7B` (decided 2026-10-05): model size is a factor. One paper run per model.
+Measured settings and dev-slice accuracy: `docs/RUNNING.md` §6–8 (512 new tokens, batch 32; thinking mode off;
+Windows spills VRAM into system RAM instead of OOM — keep batches inside 8 GB).
+
 ## Prompt versions (PLAN.md §8.5, D10)
 - `dm_v1` (default) = `INSTRUCTION` in `dreammachine/models/prompts.py`, placed in the user turn.
 - `v2_700` (friend's prompt; text received 2026-10-04; to be registered in B2 as `PROMPTS["v2_700"]`,
