@@ -238,10 +238,17 @@ def evaluate(ctx: StepContext) -> None:
 
 # ------------------------------------------------------------------- S7
 def compare(ctx: StepContext) -> None:
-    """Interim compare (B4): the existing report (report.json + report.md). B6 adds results.json (contract
-    PipelineResults), regressions, eta change and the primary block."""
-    reuse = ctx.job["resolved"].get("reuse") or {}
-    P.report(ctx.cfg, ctx.store, include_run_ids=reuse.get("baseline_run_ids", []))
+    """Stage compare (PLAN.md S7, §9): results.json (contract PipelineResults) + report.md;
+    paper mode also keeps the original report.json."""
+    from .results import write_results
+
+    if ctx.job["mode"] == "paper":
+        reuse = ctx.job["resolved"].get("reuse") or {}
+        P.report(ctx.cfg, ctx.store, include_run_ids=reuse.get("baseline_run_ids", []), write_md=False)
+    res = write_results(ctx.store, ctx.job_id)
+    for r in res["regressions"]:
+        ctx.warn(f"regression: {r['arm']} ratio {r['ratio']} on {r['benchmark']} is worse than the untrained model "
+                 f"({r['mean_diff']:+.3f}, CI [{r['ci_low']:+.3f}, {r['ci_high']:+.3f}])")
     ctx.progress(1, 1)
 
 

@@ -172,9 +172,14 @@ def test_explore_pipeline_end_to_end_and_reuse(env):
     assert "probes_heldout_families:target_slice" in store.get_run(ev["run_ids"][0])["metrics"]
     assert store.count_runs(job_id=a) == 7          # baseline, diagnose, build-data, 2 train, 2 eval
     assert all(r["mode"] == "explore" for r in store.list_runs(job_id=a))
-    rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
-    assert {"base", "targeted", "matched_control"} <= set(rep["arms"])
-    assert any(k.startswith("targeted - matched_control") for k in rep["comparisons"])
+    res = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    assert res["complete"] is True and res["mode"] == "explore" and res["paper_eligible"] is False
+    assert set(res["baseline"]) == set(BENCH) and {a["arm"] for a in res["arms"]} == {"targeted", "matched_control"}
+    assert any(c["a"] == "targeted" and c["b"] == "matched_control" for c in res["comparisons"])
+    assert res["primary"]["status"] == "proposed" and [r["benchmark"] for r in res["primary"]["results"]] == ["gsm8k"]
+    assert res["target"] == {"strategy": "auto", "feature": "n_carry", "threshold": tgt["threshold"]}
+    md = (out / "report.md").read_text(encoding="utf-8")
+    assert "EXPLORE — not paper evidence" in md and "Primary result" in md and not (out / "report.json").exists()
     assert (out / "provenance.json").exists() and (out / "config.resolved.yaml").exists()
 
     # reuse: same model/benchmarks/limit/prompt/generation -> baseline and diagnosis are skipped
@@ -183,8 +188,8 @@ def test_explore_pipeline_end_to_end_and_reuse(env):
     assert sb["baseline"]["status"] == "skipped" and sb["baseline"]["run_ids"] == base["run_ids"]
     assert sb["diagnose"]["status"] == "skipped" and sb["diagnose"]["run_ids"] == by_key["diagnose"]["run_ids"]
     assert run_job(store, b, factory, log=lambda s: None) == "done"
-    rep_b = json.loads((Path(store.get_job(b)["output_dir"]) / "report.json").read_text(encoding="utf-8"))
-    assert "base" in rep_b["arms"]                  # the reused baseline is part of the comparison
+    res_b = json.loads((Path(store.get_job(b)["output_dir"]) / "results.json").read_text(encoding="utf-8"))
+    assert res_b["baseline"] == res["baseline"]      # the reused baseline is part of the comparison
     assert store.count_runs(job_id=b) == 3          # build-data, train, eval; baseline + diagnosis are A's runs
 
     # a different benchmark_limit cannot reuse anything

@@ -96,8 +96,25 @@ class Config:
         return ProbeGrid(**{k: tuple(v) for k, v in g.items()}) if g else ProbeGrid()
 
 
+_PROVENANCE_CACHE: dict[str, dict] = {}
+
+
+def run_provenance(cfg: Config) -> dict:
+    """Provenance stored on every run (PLAN.md §9.4): code + package versions, machine, model revision,
+    mode, prompt, seeds, precision. The expensive part (git, packages) is computed once per process and model."""
+    from ..provenance import hf_revision, provenance
+
+    if cfg.model not in _PROVENANCE_CACHE:
+        _PROVENANCE_CACHE[cfg.model] = {**provenance(), "model_revision": hf_revision(cfg.model) if cfg.model else None}
+    return {**_PROVENANCE_CACHE[cfg.model], "mode": cfg.mode, "model": cfg.model, "prompt_version": cfg.prompt_version,
+            "seeds": list(cfg.seeds), "precision": {"train_load_in_4bit": cfg.train.get("load_in_4bit"),
+                                                    "eval_load_in_4bit": bool(cfg.eval.get("load_in_4bit", False))}}
+
+
 def _new_run(store: Store, cfg: Config, name: str, kind: str, config: dict) -> str:
-    return store.create_run(name, kind, config, job_id=cfg.job_id, mode=cfg.mode)
+    run = store.create_run(name, kind, config, job_id=cfg.job_id, mode=cfg.mode)
+    store.put_artifact(run, "provenance", run_provenance(cfg))
+    return run
 
 
 Progress = Callable[[int, int], None]   # progress(done, total); may raise errors.Cancelled at a safe point
@@ -447,8 +464,9 @@ def evaluate_model(cfg: Config, store: Store, runner_factory: RunnerFactory, arm
     tag = "base" if arm == "base" else f"{arm}_r{ratio:g}_s{seed}"
     sets = eval_sets(cfg)
     run = _new_run(store, cfg, f"{cfg.name}:eval:{tag}", "eval",
-                   {"arm": arm, "ratio": ratio, "seed": seed, "adapter": adapter,
-                    "prompt_version": cfg.prompt_version, "benchmarks": list(sets)})
+                   {"arm": arm, "ratio": ratio, "seed": seed, "adapter": adapter, "model": cfg.model,
+                    "prompt_version": cfg.prompt_version, "benchmarks": list(sets),
+                    "eval_load_in_4bit": bool(cfg.eval.get("load_in_4bit", False))})
     runner = runner_factory(cfg.model, adapter, cfg.gen())
     tgt = load_target(cfg)
     metrics: dict[str, Any] = {"arm": arm, "ratio": ratio, "seed": seed}
@@ -494,7 +512,8 @@ def paired_bootstrap(a: np.ndarray, b: np.ndarray, n_boot: int = 10_000, seed: i
             "ci_high": float(np.percentile(boots, 97.5)), "p_value": float(min(1.0, p)), "n": int(len(diff))}
 
 
-def report(cfg: Config, store: Store, ratio: float | None = None, include_run_ids: Iterable[str] = ()) -> dict:
+def report(cfg: Config, store: Store, ratio: float | None = None, include_run_ids: Iterable[str] = (),
+           write_md: bool = True) -> dict:
     """Aggregate eval runs: per-arm means over seeds, and paired item-level comparisons,
     where each item's correctness is first averaged over seeds within an arm.
     include_run_ids: extra eval runs to use (a baseline reused from another job has that job's name)."""
@@ -532,7 +551,8 @@ def report(cfg: Config, store: Store, ratio: float | None = None, include_run_id
             comparisons[f"{a} - {b} | {src}"] = paired_bootstrap(xa, xb)
     result = {"ratio": ratio, "arms": summary, "comparisons": comparisons}
     (cfg.out / "report.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
-    (cfg.out / "report.md").write_text(_report_md(result), encoding="utf-8")
+    if write_md:
+        (cfg.out / "report.md").write_text(_report_md(result), encoding="utf-8")
     return result
 
 

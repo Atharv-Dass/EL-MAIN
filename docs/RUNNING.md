@@ -50,6 +50,12 @@ python -m dreammachine.jobs cancel <job id>         # stops at the next safe poi
 python -m dreammachine.jobs resume <job id>         # failed/cancelled -> queued; finished steps are kept
 python -m dreammachine.jobs delete <job id>         # explore jobs only, not while queued/running
 ```
+**Results (B6):** the last step writes `runs/pipelines/<job id>/results.json` (the API's `PipelineResults`) and a
+readable `report.md`: baseline, the primary result (targeted − matched control; "proposed" until the team confirms
+D8), each arm vs the untrained model with regressions, arm vs arm, change in η (negative = the feature hurts less),
+error-type shift, and provenance. Paper runs are flagged `paper_eligible` only if every step finished, nothing was
+overridden and the git working tree was clean when the run started — commit before starting a paper run.
+
 Logs: `runs/pipelines/<job id>/logs/job.log`; GPU readings every 30 s: `logs/gpu.csv` (temperature, SM clock, power,
 utilisation, memory), summarised per step. Only one worker can run at a time.
 
