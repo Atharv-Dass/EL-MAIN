@@ -115,12 +115,16 @@ eval_data:
 ```
 (The format is `Example` rows: see `dreammachine.data.save_jsonl`.)
 
-## 5. API (for the frontend, later)
+## 5. API (B7) — what the frontend talks to
 ```powershell
-$env:DREAMMACHINE_DB = "runs/dreammachine.db"
-uvicorn dreammachine.api.app:app --host 127.0.0.1 --port 8000
-# http://127.0.0.1:8000/docs
+python -m dreammachine.serve                    # API on http://127.0.0.1:8000/api/v1 + the worker; Ctrl+C stops both
+python -m dreammachine.serve --no-worker        # API only (run `python -m dreammachine.jobs.worker` yourself)
+# interactive docs: http://127.0.0.1:8000/docs
+python -m dreammachine.api.export_openapi       # after any route/shape change -> docs/openapi.json
 ```
+The API is exactly `docs/API_CONTRACT.md` (version 0.2.0). It listens on 127.0.0.1 only and has no authentication:
+never expose it to a network. CORS allows the dev servers on ports 5173 and 3000 (override with
+`$env:DREAMMACHINE_CORS_ORIGINS = "http://localhost:5173,..."`).
 
 ## 6. Measured numbers (RTX 4060 Laptop, 8 GB) — GPU-verified, B1 smoke run, 2026-10-04
 Setup: native Windows 11, Python 3.11.9, torch 2.11.0+cu128, transformers 5.18.0, peft 0.21.2,

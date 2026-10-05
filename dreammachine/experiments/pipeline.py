@@ -304,7 +304,7 @@ def _select_synthetic(cfg: Config, seed: int, lltm: LLTMResult | None, target: s
     max_syn_tokens = budget * max(ratios) / (1 + max(ratios))
     mean_len = np.mean([whitespace_tokens(it.question) + whitespace_tokens(it.solution) for it in pool[:500]])
     need = int(math.ceil(1.3 * max_syn_tokens / mean_len))
-    out: dict[str, Any] = {"syn": {}, "match": None, "warning": None}
+    out: dict[str, Any] = {"syn": {}, "match": None, "warning": None, "features": {}}
     if {"targeted", "matched_control"} & arms:
         targeted = select_targeted(pool, lltm, target, threshold, n=need, p_band=p_band, seed=seed)
         control, match = select_matched_control(pool, lltm, target, threshold, targeted, seed=seed)
@@ -313,9 +313,21 @@ def _select_synthetic(cfg: Config, seed: int, lltm: LLTMResult | None, target: s
         out["syn"]["targeted"] = [to_train(e) for e in from_items(targeted)]
         out["syn"]["matched_control"] = [to_train(e) for e in from_items(control)]
         out["match"] = match.to_dict()
+        out["features"].update({it.id: dict(it.features) for it in [*targeted, *control]})
     if "untargeted" in arms:
-        out["syn"]["untargeted"] = [to_train(e) for e in from_items(select_untargeted(natural, need, seed=seed))]
+        untargeted = select_untargeted(natural, need, seed=seed)
+        out["syn"]["untargeted"] = [to_train(e) for e in from_items(untargeted)]
+        out["features"].update({it.id: dict(it.features) for it in untargeted})
     return out
+
+
+def _write_features(cfg: Config, seed: int, features: dict[str, dict]) -> None:
+    """data/features_s<seed>.json: synthetic item id -> Q-matrix features, for showing training samples (API).
+    A separate file, so the training JSONL files stay exactly as they were."""
+    path = cfg.out / "data" / f"features_s{seed}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    path.write_text(json.dumps({**old, **features}), encoding="utf-8")
 
 
 def _write_arm(cfg: Config, real: list[TrainExample], data: list[TrainExample], arm: str, ratio: float,
@@ -336,6 +348,7 @@ def build_arm(cfg: Config, arm: str, ratio: float, seed: int, target: str | None
     if arm == "real_only":
         return _write_arm(cfg, real, [], arm, 0.0, seed)[1]
     sel = _select_synthetic(cfg, seed, lltm, target, threshold, set(diag["probe_ids"]), {arm})
+    _write_features(cfg, seed, sel["features"])
     return _write_arm(cfg, real, sel["syn"][arm], arm, ratio, seed)[1]
 
 
@@ -361,6 +374,7 @@ def build_data(cfg: Config, store: Store, arms: list[tuple[str, float]] | None =
 
     for seed in cfg.seeds:
         sel = _select_synthetic(cfg, seed, lltm, target, threshold, exclude, wanted - {"real_only"})
+        _write_features(cfg, seed, sel["features"])
         if sel["warning"]:
             manifest.setdefault("warnings", []).append(sel["warning"])
         if sel["match"] is not None:

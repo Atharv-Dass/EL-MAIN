@@ -1,7 +1,7 @@
 # DreamMachine — API Contract (backend ⇄ frontend)
 
-**Contract version: `0.2.0`** · Status: **DRAFT** (designed 2026-10-04, revised after review; not implemented
-yet; becomes "implemented" at backend milestone B7 in `PLAN.md`).
+**Contract version: `0.2.0`** · Status: **IMPLEMENTED** (designed 2026-10-04, revised after review; implemented
+at backend milestone B7 on 2026-10-05; `tests/test_api_contract.py` keeps the app and this file in step).
 
 This file is the **only** thing the frontend may rely on. The frontend (to be built by Manus AI) talks to the
 backend **only over HTTP** using the endpoints below. It must not import Python code, read the SQLite file,
