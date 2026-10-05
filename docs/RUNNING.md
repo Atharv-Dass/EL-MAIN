@@ -292,3 +292,40 @@ classifier keeps finding equations to check. v2_700 asks for no written work: on
 UNVERIFIABLE and accuracy falls to 0.36. `format_ok` (a bare final number) stays low for every prompt; with
 qwen_boxed it is 0 by design (the answer is in `\boxed{}`, which `extract_answer` reads). 700 tokens cut off at most
 0.5 % of answers, and 0.6B accuracies equal the 512-token dev runs exactly (§7), so 512 tokens stays the setting.
+
+## 10. Dev-set tuning of the training settings — GPU-verified, EXPLORE (not paper evidence), 2026-10-06
+`python -m dreammachine.experiments.tune --config configs/tune.yaml` (PLAN.md §14 question 7). Qwen3-0.6B, project
+prompt, B8 diagnosis (target `steps`, threshold 4.0), token budget 200k, one seed. Dev set = the last 200 GSM8K
+**train** problems, removed from the training data (`data.dev_holdout: 200`); GSM8K test was not used. Plus 100
+held-out probe problems. Each variant took ~29 min to train (1 epoch: 15 min) and ~10 min to evaluate.
+
+| Variant | GSM8K dev (base 0.705) | Δ vs base [95% CI] | held-out probes (base 0.31) | target slice above (base 0.10) | answer length (base 748 chars) |
+|---|---|---|---|---|---|
+| targeted, lr 2e-4, 2 epochs, ratio 3 (B8 settings) | 0.480 | −0.225 [−0.300, −0.150] | 0.53 (+0.22) | 0.43 | 325 |
+| targeted, lr 5e-5 | 0.470 | −0.235 [−0.315, −0.155] | 0.56 (+0.25) | 0.45 | 306 |
+| targeted, lr 1e-4, 1 epoch | 0.465 | −0.240 [−0.320, −0.165] | 0.50 (+0.19) | 0.41 | 317 |
+| targeted, ratio 1 (more real data) | 0.505 | −0.200 [−0.275, −0.125] | 0.54 (+0.23) | 0.53 | 300 |
+| **real_only** (no synthetic data) | 0.480 | −0.225 [−0.295, −0.155] | 0.17 (−0.14) | 0.08 | 305 |
+
+**Findings**
+1. **The GSM8K regression is not a hyper-parameter problem.** Learning rate (4x lower), half the epochs and more real
+   data all stay at −0.20 to −0.24 (overlapping CIs).
+2. **It is not caused by the synthetic data:** training on real GSM8K problems only regresses just as much.
+3. **The cause is the completion style.** Every fine-tuned model writes answers ~2.4x shorter (≈300 vs 748 chars),
+   copying the terse style of the training solutions (GSM8K's reference solutions and our code-written ones), and
+   loses part of its own step-by-step reasoning. (Side effect: far fewer UNVERIFIABLE errors — trained models write
+   equations — 0.37 → ~0.10-0.18 of wrong answers.)
+4. **The synthetic data does what it should:** every targeted variant gains +0.19 to +0.25 on held-out probes, and
+   the target slice (problems with more than 4 steps) goes from 0.10 to 0.41-0.53; real data alone hurts the probes.
+
+**What would address it (a decision for the team — not done):**
+- (a) **Self-distillation for the solution text:** keep the problems, answers and features made by code, but train on
+  the base model's own correct, verified solutions (rejection sampling: generate, keep only answers that match the
+  gold and whose equations check out) instead of the terse reference text. This keeps the model's style. The
+  solution text is then model-written, so it needs the team's explicit OK (PLAN.md §2.3, D2).
+- (b) Make the code-written solutions longer and closer to the model's own style (stays fully "made by code"; may
+  only partly help, since the real GSM8K solutions would still be terse).
+- (c) Accept it: all arms share the regression, so arm-vs-arm comparisons stay fair — but a paper that lowers GSM8K
+  accuracy is weaker, and reviewers will ask.
+- Among the tested settings, ratio 1 regressed least and moved the target slice most, but the differences are within
+  noise; no config was changed.

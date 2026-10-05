@@ -15,6 +15,7 @@ import argparse
 import copy
 import json
 import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -25,6 +26,19 @@ from ..benchmarks import registry
 from ..store.db import Store
 from . import pipeline as P
 from .evaluate import evaluate, slice_accuracy, summarize
+
+
+def free_gpu() -> None:
+    """Release GPU memory between variants. All variants run in one process (unlike pipeline steps, which each get
+    their own subprocess), so without this the cached memory of earlier variants piles up (an OOM on the 5th
+    variant overnight 2026-10-06)."""
+    import gc
+    import sys
+
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _item_correct(recs) -> dict[str, float]:
@@ -60,6 +74,8 @@ def run_eval(cfg: P.Config, factory: P.RunnerFactory, adapter: str | None, sets:
                      "mean_chars": float(np.mean([len(r.text) for r in recs]))}
         if name.startswith("probes") and target.get("feature"):
             out[name]["target_slice"] = slice_accuracy(recs, target["feature"], target["threshold"])
+    del runner
+    free_gpu()
     return out
 
 
@@ -126,7 +142,9 @@ def tune(config_path: str | Path, factory: P.RunnerFactory | None = None, log: C
         t0 = time.time()
         stats = P.build_data(cfg, store, arms=[(arm, ratio)])
         t1 = time.time()
+        free_gpu()
         adapter = P.train_arm(cfg, store, arm, ratio, cfg.seeds[0])
+        free_gpu()
         t2 = time.time()
         ev = run_eval(cfg, factory, str(adapter), sets, target)
         t3 = time.time()
@@ -174,7 +192,11 @@ def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="python -m dreammachine.experiments.tune", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", required=True)
-    tune(p.parse_args(argv).config, log=lambda s: print(s, flush=True))
+    args = p.parse_args(argv)
+    # Windows: a redirected stdout uses the ANSI code page (cp1252), which cannot print "Δ" (seen 2026-10-06).
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    tune(args.config, log=lambda s: print(s, flush=True))
 
 
 if __name__ == "__main__":
