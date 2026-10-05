@@ -5,6 +5,8 @@
     python -m dreammachine.jobs run --preset paper --model Qwen/Qwen3-1.7B
     python -m dreammachine.jobs run --kind benchmark_run --model Qwen/Qwen3-0.6B --limit 300 --no-diagnosis
     python -m dreammachine.jobs enqueue ...   (same flags; only queues the job for the worker)
+    python -m dreammachine.jobs list | show <id> | cancel <id> | resume <id> | delete <id>
+    python -m dreammachine.jobs.worker        (runs queued jobs, one step per subprocess)
 
 `run` executes every step in this process, in the foreground (no worker). Explore runs are never paper evidence.
 """
@@ -70,25 +72,50 @@ def _parser() -> argparse.ArgumentParser:
         s.add_argument("--no-diagnosis", action="store_true", help="benchmark_run only")
         s.add_argument("--db", default="runs/dreammachine.db")
         s.add_argument("--runs-root", default="runs/pipelines")
+    for name, help_ in (("cancel", "cancel a queued or running job"), ("resume", "resume a failed or cancelled job"),
+                        ("delete", "delete a finished explore job and its folder"), ("show", "show one job")):
+        s = sub.add_parser(name, help=help_)
+        s.add_argument("job_id")
+        s.add_argument("--db", default="runs/dreammachine.db")
+    s = sub.add_parser("list", help="list jobs, newest first")
+    s.add_argument("--db", default="runs/dreammachine.db")
     return p
 
 
+def _summary(store: Store, job_id: str) -> dict:
+    job = store.get_job(job_id)
+    return {"job_id": job_id, "kind": job["kind"], "mode": job["mode"], "status": job["status"],
+            "cancel_requested": job["cancel_requested"], "output_dir": job["output_dir"], "error": job["error"],
+            "warnings": job["warnings"],
+            "steps": [f"{s['idx']:>2} {s['key']:<34} {s['status']}" for s in store.get_steps(job_id)]}
+
+
 def main(argv: list[str] | None = None) -> dict:
+    from .control import cancel_job, delete_job, resume_job
+
     args = _parser().parse_args(argv)
     store = Store(args.db)
     try:
-        job_id = create_job_from_request(store, args.kind, _request(args), runs_root=args.runs_root,
-                                         allow_local_models=True, allow_jsonl=True)
+        if args.cmd == "list":
+            out = {"jobs": [f"{j['id']}  {j['kind']:<13} {j['mode']:<7} {j['status']:<9} {j['name']}"
+                            for j in store.list_jobs()]}
+        elif args.cmd in ("cancel", "resume", "show"):
+            if args.cmd != "show":
+                (cancel_job if args.cmd == "cancel" else resume_job)(store, args.job_id)
+            elif store.get_job(args.job_id) is None:
+                raise JobError("not_found", f"no job {args.job_id!r}")
+            out = _summary(store, args.job_id)
+        elif args.cmd == "delete":
+            out = delete_job(store, args.job_id)
+        else:
+            job_id = create_job_from_request(store, args.kind, _request(args), runs_root=args.runs_root,
+                                             allow_local_models=True, allow_jsonl=True)
+            if args.cmd == "run":
+                run_job(store, job_id, log=lambda s: print(s, flush=True))
+            out = _summary(store, job_id)
     except JobError as e:
-        out = {"error": e.to_dict()}
-        print(json.dumps(out, indent=2))
+        print(json.dumps({"error": e.to_dict()}, indent=2))
         raise SystemExit(2)
-    if args.cmd == "run":
-        run_job(store, job_id, log=lambda s: print(s, flush=True))
-    job = store.get_job(job_id)
-    out = {"job_id": job_id, "status": job["status"], "output_dir": job["output_dir"], "error": job["error"],
-           "warnings": job["warnings"],
-           "steps": [f"{s['idx']:>2} {s['key']:<34} {s['status']}" for s in store.get_steps(job_id)]}
     print(json.dumps(out, indent=2))
     return out
 

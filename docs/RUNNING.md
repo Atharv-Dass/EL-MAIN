@@ -36,8 +36,22 @@ python -m dreammachine.jobs run --preset explore --model Qwen/Qwen3-1.7B --targe
 python -m dreammachine.jobs run --preset paper --model Qwen/Qwen3-0.6B                             # the full protocol (days)
 ```
 `--reuse-from` skips the baseline (and the diagnosis, if its settings match) of an earlier explore pipeline or benchmark
-run. Resuming a failed or cancelled job (finished steps kept) comes with the worker in B5. Explore defaults:
-`configs/explore.yaml` (starting guesses until B8 measures them).
+run. Explore defaults: `configs/explore.yaml` (starting guesses until B8 measures them).
+
+**Queue + worker (B5)** — queue jobs, and let one worker run them in the background (one step per subprocess,
+so GPU memory is freed after every step):
+```powershell
+python -m dreammachine.jobs enqueue --preset explore --model Qwen/Qwen3-0.6B --limit 50
+python -m dreammachine.jobs.worker                  # keep this window open; Ctrl+C stops it (the running step fails
+                                                    # as "interrupted" and can be resumed)
+python -m dreammachine.jobs list
+python -m dreammachine.jobs show <job id>
+python -m dreammachine.jobs cancel <job id>         # stops at the next safe point; force-killed after 120 s
+python -m dreammachine.jobs resume <job id>         # failed/cancelled -> queued; finished steps are kept
+python -m dreammachine.jobs delete <job id>         # explore jobs only, not while queued/running
+```
+Logs: `runs/pipelines/<job id>/logs/job.log`; GPU readings every 30 s: `logs/gpu.csv` (temperature, SM clock, power,
+utilisation, memory), summarised per step. Only one worker can run at a time.
 
 ## 1. Smoke run (proves your setup works end to end)
 ```powershell

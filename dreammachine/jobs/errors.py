@@ -6,7 +6,7 @@ from __future__ import annotations
 from ..errors import Cancelled, NoSignificantWeakness
 
 REQUEST_CODES = ("validation_error", "paper_mode_locked", "reuse_mismatch", "invalid_feature", "unknown_model",
-                 "unknown_benchmark")
+                 "unknown_benchmark", "not_found", "conflict", "not_ready", "paper_protected")
 STEP_CODES = ("no_significant_weakness", "gpu_unavailable", "out_of_memory", "model_access_denied",
               "dataset_unavailable", "disk_low", "interrupted", "cancelled", "internal_error")
 
