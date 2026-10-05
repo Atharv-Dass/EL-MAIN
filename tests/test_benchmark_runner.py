@@ -53,14 +53,14 @@ def test_cli_run_scores_stores_and_records_provenance(data):
                runner_factory=lambda m, g, q: EchoRunner(_answers(exs)))
     r = res[name]
     assert r[name] == 0.5 and r["n_examples"] == 6 and r["format_ok_share"] == 0.0
-    rows = read_rows(output_path(out, "echo-model", name, "dm_v1"))
+    rows = read_rows(output_path(out, "echo-model", name, "qwen_boxed"))
     assert len(rows) == 6
     for key in ("model_id", "prompt_version", "gen_settings", "batch_secs", "git_commit", "packages", "gold"):
         assert key in rows[0], key
-    assert rows[0]["prompt_version"] == "dm_v1" and rows[0]["gen_settings"]["max_new_tokens"] == 512
+    assert rows[0]["prompt_version"] == "qwen_boxed" and rows[0]["gen_settings"]["max_new_tokens"] == 512
     store = Store(db)
     run = store.get_run(r["run_id"])
-    assert run["kind"] == "eval" and run["config"]["prompt_version"] == "dm_v1"
+    assert run["kind"] == "eval" and run["config"]["prompt_version"] == "qwen_boxed"
     assert len(store.get_responses(r["run_id"])) == 6
 
 
@@ -71,7 +71,7 @@ def test_resume_skips_done_rows_and_survives_a_cut_line(data):
     run_benchmark(bench, bench.load(limit=3), runner, "m", gen, tmp / "o", log=lambda s: None)
     run_benchmark(bench, bench.load(), runner, "m", gen, tmp / "o", log=lambda s: None)
     assert len(runner.asked) == 6 and len(set(runner.asked)) == 6          # the first 3 were not asked again
-    path = output_path(tmp / "o", "m", name, "dm_v1")
+    path = output_path(tmp / "o", "m", name, "qwen_boxed")
     lines = path.read_text(encoding="utf-8").splitlines()
     path.write_text("\n".join(lines[:-1]) + "\n" + lines[-1][:25], encoding="utf-8")   # sudden stop mid-write
     res = run_benchmark(bench, bench.load(), runner, "m", gen, tmp / "o", log=lambda s: None)

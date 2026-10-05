@@ -7,7 +7,8 @@ import pytest
 
 from dreammachine.experiments import pipeline as P
 from dreammachine.models.prompts import (
-    DEFAULT_PROMPT, INSTRUCTION, PROMPTS, QWEN_BOXED, V2_700, build_messages, format_prompt, get_prompt,
+    DEFAULT_PROMPT, INSTRUCTION, PROMPTS, QWEN_BOXED, V2_700, build_messages, format_completion, format_prompt,
+    get_prompt,
 )
 
 V2_700_TEXT = ("Solve the math problem step by step. At the end, write a separate final line containing only the "
@@ -27,10 +28,23 @@ def test_v2_700_matches_project_memory():
     assert memory.split(">>>`", 1)[1].split("`<<<", 1)[0] == PROMPTS["v2_700"]
 
 
-def test_dm_v1_is_default_and_unchanged():
-    assert DEFAULT_PROMPT == "dm_v1" and PROMPTS["dm_v1"] == INSTRUCTION
-    assert build_messages("Q?") == [{"role": "user", "content": f"{INSTRUCTION}\n\nProblem: Q?"}]
-    assert format_prompt("Q?") == f"{INSTRUCTION}\n\nProblem: Q?\nSolution:\n"
+def test_default_is_qwen_boxed_and_dm_v1_unchanged():
+    assert DEFAULT_PROMPT == "qwen_boxed"                       # chosen by the user, 2026-10-05 (D10)
+    assert build_messages("Q?") == [{"role": "user", "content": f"Q?\n{QWEN_BOXED}"}]
+    assert PROMPTS["dm_v1"] == INSTRUCTION
+    assert build_messages("Q?", "dm_v1") == [{"role": "user", "content": f"{INSTRUCTION}\n\nProblem: Q?"}]
+    assert format_prompt("Q?", prompt_version="dm_v1") == f"{INSTRUCTION}\n\nProblem: Q?\nSolution:\n"
+
+
+def test_training_answer_format_follows_the_prompt():
+    sol = "Tom has 3 + 4 = 7 apples.\n#### 7"
+    assert format_completion(sol, "qwen_boxed") == "Tom has 3 + 4 = 7 apples.\n\\boxed{7}"
+    assert format_completion(sol, "v2_700") == "Tom has 3 + 4 = 7 apples.\n7"
+    assert format_completion(sol, "dm_v1") == sol
+    assert format_completion("no final marker", "qwen_boxed") == "no final marker"
+    from dreammachine.diagnosis.extract import extract_answer, lastline_format_ok
+    assert extract_answer(format_completion(sol, "qwen_boxed")) == 7          # the classifier reads \boxed{}
+    assert lastline_format_ok(format_completion(sol, "v2_700"))
 
 
 def test_placements():
@@ -72,7 +86,7 @@ def test_chat_template_renders_system(tiny_model_dir):
 def test_config_carries_one_prompt_version(tmp_path):
     cfg = P.Config(name="t", output_dir=str(tmp_path), prompt_version="v2_700")
     assert cfg.gen().prompt_version == "v2_700"
-    assert P.Config(name="t", output_dir=str(tmp_path)).gen().prompt_version == "dm_v1"
+    assert P.Config(name="t", output_dir=str(tmp_path)).gen().prompt_version == "qwen_boxed"
     cfg.generation = {"prompt_version": "dm_v1"}
     with pytest.raises(ValueError, match="top level"):
         cfg.gen()

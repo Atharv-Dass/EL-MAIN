@@ -14,8 +14,10 @@ from dreammachine.train import TrainConfig, tokenize_example, train
 
 
 def test_format_prompt_without_tokenizer():
-    p = format_prompt("What is 2 + 3?")
+    p = format_prompt("What is 2 + 3?", prompt_version="dm_v1")
     assert "Problem: What is 2 + 3?" in p and p.endswith("Solution:\n")
+    boxed = format_prompt("What is 2 + 3?")   # project default: qwen_boxed
+    assert boxed.startswith("What is 2 + 3?\nPlease reason step by step") and boxed.endswith("Solution:\n")
 
 
 def test_tokenize_masks_prompt(tiny_model_dir):

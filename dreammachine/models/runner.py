@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass
 from typing import Protocol
 
-from .prompts import format_prompt
+from .prompts import DEFAULT_PROMPT, format_prompt
 
 
 def check_4bit_support(setting: str = "load_in_4bit") -> None:
@@ -45,7 +45,7 @@ class GenConfig:
     top_p: float = 0.95
     batch_size: int = 16       # generated sequences per forward batch (questions x n_samples)
     seed: int = 0
-    prompt_version: str = "dm_v1"   # see models/prompts.py::PROMPTS
+    prompt_version: str = DEFAULT_PROMPT   # see models/prompts.py::PROMPTS
 
 
 class HFRunner:

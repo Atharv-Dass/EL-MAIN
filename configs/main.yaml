@@ -74,3 +74,4 @@ gpu:
 
 seeds: [0, 1, 2]
 real_data: gsm8k
+prompt_version: qwen_boxed   # project prompt (PLAN.md D10, chosen 2026-10-05)

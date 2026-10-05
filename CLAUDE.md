@@ -45,8 +45,8 @@ Windows spills VRAM into system RAM instead of OOM — keep batches inside 8 GB)
 
   `>>>`Solve the math problem step by step. At the end, write a separate final line containing only the numeric answer, with no units, dollar sign, commas, bold formatting, or extra text. Example final line: 18.`<<<`
 
-- `qwen_boxed` (B2): the Qwen3 model card's math prompt, after the question. Best on the dev slice
-  (`docs/RUNNING.md` §7); the project default stays `dm_v1` until the team decides (D10).
+- **`qwen_boxed` = THE PROJECT PROMPT (D10, chosen by the user 2026-10-05)**: the Qwen3 model card's math prompt,
+  after the question. Default in code and all configs. Training answers end with `\boxed{n}` (`format_completion`).
 - One `prompt_version` per project, set at the top level of a config. Benchmarks and extractors: `docs/BENCHMARKS.md`.
 
 ## API contract

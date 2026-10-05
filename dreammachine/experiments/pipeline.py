@@ -34,6 +34,7 @@ from ..diagnosis.targeting import (
 from ..generator.features import FEATURES
 from ..generator.probes import ProbeGrid, build_pool, factorial_probe_set
 from ..errors import NoSignificantWeakness
+from ..models.prompts import DEFAULT_PROMPT
 from ..models.runner import GenConfig, Runner
 from ..store.db import Store
 from .evaluate import ResponseRecord, evaluate, item_counts, slice_accuracy, summarize
@@ -66,7 +67,7 @@ class Config:
     seeds: list[int] = field(default_factory=lambda: [0, 1, 2])
     real_data: str = "gsm8k"          # "gsm8k" or a path to a JSONL of Examples
     eval_data: dict = field(default_factory=dict)  # optional local JSONL overrides
-    prompt_version: str = "dm_v1"     # one prompt for benchmark, diagnosis, training and evaluation (D10)
+    prompt_version: str = DEFAULT_PROMPT   # one prompt for benchmark, diagnosis, training and evaluation (D10)
     preflight: dict = field(default_factory=dict)   # min_free_gb (PLAN.md S0)
     gpu: dict = field(default_factory=dict)         # memory_fraction: VRAM cap per step (docs/RUNNING.md §8)
     job_id: str | None = None         # set by the job system: links stored runs to their pipeline / benchmark run

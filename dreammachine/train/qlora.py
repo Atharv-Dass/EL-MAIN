@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ..data.mixer import TrainExample
-from ..models.prompts import format_prompt
+from ..models.prompts import DEFAULT_PROMPT, format_completion, format_prompt
 
 
 @dataclass
@@ -38,7 +38,7 @@ class TrainConfig:
     weight_decay: float = 0.0
     gradient_checkpointing: bool = True
     seed: int = 0
-    prompt_version: str = "dm_v1"   # must equal the evaluation prompt (PLAN.md D10)
+    prompt_version: str = DEFAULT_PROMPT   # must equal the evaluation prompt (PLAN.md D10)
     logging_steps: int = 10
     save_steps: int = 200
     save_total_limit: int = 2
@@ -46,11 +46,11 @@ class TrainConfig:
     extra: dict = field(default_factory=dict)
 
 
-def tokenize_example(tokenizer, ex: TrainExample, max_len: int, prompt_version: str = "dm_v1") -> dict | None:
+def tokenize_example(tokenizer, ex: TrainExample, max_len: int, prompt_version: str = DEFAULT_PROMPT) -> dict | None:
     """Prompt tokens get label -100, so only the completion is learned.
     Returns None if truncation would remove the entire completion."""
     prompt = format_prompt(ex.prompt, tokenizer, prompt_version)
-    completion = ex.completion.strip() + (tokenizer.eos_token or "")
+    completion = format_completion(ex.completion.strip(), prompt_version) + (tokenizer.eos_token or "")
     p_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     c_ids = tokenizer(completion, add_special_tokens=False)["input_ids"]
     if len(p_ids) >= max_len:

@@ -4,12 +4,15 @@ Using the identical format in both places matters: if training and evaluation
 prompts differ, part of any measured gain is just format adaptation. One project uses
 one `prompt_version` everywhere; the others exist to compare prompts.
 
-    dm_v1       ours (default). Instruction + "Problem: ..." in the user turn.
+    dm_v1       ours (the default until 2026-10-05). Instruction + "Problem: ..." in the user turn.
     v2_700      the friend's prompt (text received 2026-10-04), as the SYSTEM message; user turn = question.
-    qwen_boxed  the math prompt recommended in the Qwen3 model card ("Best Practices"), after the question.
+    qwen_boxed  the PROJECT PROMPT (default, D10): the math prompt recommended in the Qwen3 model card
+                ("Best Practices"), after the question. Training answers end with \\boxed{n} (format_completion).
 """
 
 from __future__ import annotations
+
+import re
 
 INSTRUCTION = (
     "Solve the math word problem step by step. Write every calculation as an equation, "
@@ -25,10 +28,32 @@ V2_700 = (
 QWEN_BOXED = "Please reason step by step, and put your final answer within \\boxed{}."
 
 PROMPTS: dict[str, str] = {"dm_v1": INSTRUCTION, "v2_700": V2_700, "qwen_boxed": QWEN_BOXED}
-DEFAULT_PROMPT = "dm_v1"
+# The project prompt (PLAN.md D10): chosen by the user on 2026-10-05 after the dev-slice comparison
+# (docs/RUNNING.md §7: +14 points on Qwen3-0.6B and +7 on Qwen3-1.7B over dm_v1).
+DEFAULT_PROMPT = "qwen_boxed"
 
 # Where the prompt text goes: before the problem in the user turn, as the system message, or after the question.
 _PLACEMENT = {"dm_v1": "user_prefix", "v2_700": "system", "qwen_boxed": "user_suffix"}
+
+
+_FINAL_HASH = re.compile(r"^####\s*(.+?)\s*$")
+
+
+def format_completion(completion: str, prompt_version: str = DEFAULT_PROMPT) -> str:
+    """Rewrite a training answer's final `#### n` line into the format the prompt asks for, so training
+    teaches the same answer format that evaluation expects (D10). The data files keep `#### n`.
+        dm_v1       `#### n` (unchanged)
+        qwen_boxed  `\\boxed{n}`
+        v2_700      `n` (a bare final line)
+    """
+    get_prompt(prompt_version)
+    lines = completion.rstrip().split("\n")
+    m = _FINAL_HASH.match(lines[-1].strip()) if lines else None
+    if m is None or prompt_version == "dm_v1":
+        return completion.rstrip()
+    answer = m.group(1)
+    lines[-1] = f"\\boxed{{{answer}}}" if prompt_version == "qwen_boxed" else answer
+    return "\n".join(lines)
 
 
 def get_prompt(prompt_version: str) -> str:
