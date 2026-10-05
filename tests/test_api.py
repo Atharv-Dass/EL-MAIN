@@ -102,7 +102,7 @@ def _err(r, status, code):
 # ------------------------------------------------------------ system and catalog
 def test_health_and_unknown_route(world):
     c = world["client"]
-    assert _ok(c.get("/api/v1/health")) == {"status": "ok", "version": "0.1.0", "api_version": "0.2.0"}
+    assert _ok(c.get("/api/v1/health")) == {"status": "ok", "version": "0.1.0", "api_version": "0.2.1"}
     _err(c.get("/api/v1/nope"), 404, "not_found")
     _err(c.get("/health"), 404, "not_found")                    # the old unprefixed routes are gone
 
@@ -134,6 +134,7 @@ def test_models_benchmarks_presets_components(world):
     assert p["explore"]["defaults"]["arms"] == ["targeted", "matched_control"] and p["explore"]["defaults"]["ratio"] == 3
     assert p["explore"]["allowed"] == {"ratio": [1, 3, 9], "seeds": [0, 1, 2], "max_seeds": 3, "min_benchmark_limit": 10}
     assert p["paper"]["n_steps"] == 42 and p["paper"]["settable"] == ["name", "model"]
+    assert p["prompt_versions"] == ["dm_v1", "qwen_boxed", "v2_700"] and p["default_prompt_version"] == "qwen_boxed"
     comps = _ok(c.get("/api/v1/components"))
     assert any(x["id"] == "C9" and x["path"].endswith("lltm.py") for x in comps)
 
@@ -315,7 +316,9 @@ def test_runs_responses_artifacts_compare(world):
     r0 = resp["items"][0]
     assert r0["correct"] is False and r0["source"] == "gsm8k" and r0["features"] == {}
     assert set(r0["diagnosis"]) == {"error_type", "predicted", "gold", "n_equations", "n_slips", "slip_index",
-                                    "slip_ops", "slip_operand_digits", "divergence_step", "progress"}
+                                    "slip_ops", "slip_operand_digits", "divergence_step", "progress",
+                                    "lastline", "lastline_v0", "format_ok", "truncated"}          # 0.2.1
+    assert isinstance(r0["diagnosis"]["format_ok"], bool) and r0["diagnosis"]["truncated"] is None   # simulated runner
     et = r0["error_type"]
     assert all(x["error_type"] == et for x in _ok(c.get(f"/api/v1/runs/{base_id}/responses",
                                                         params={"error_type": et}))["items"])
@@ -344,6 +347,7 @@ def test_tools(world):
         "reference_solution": "48/2 = <<48/2=24>>24\n48+24 = <<48+24=72>>72\n#### 72",
         "response": "48 / 2 = 24\n48 + 24 = 70\n#### 70"}))
     assert d["error_type"] == "ARITHMETIC_SLIP" and d["slip_index"] == 1
+    assert (d["lastline"], d["lastline_v0"], d["format_ok"], d["truncated"]) == ("70", "70", False, None)
     Q = [[s, 1.0] for s in range(1, 9) for _ in range(10)]
     succ = [1.0 if (i % 10) < 10 - q[0] else 0.0 for i, q in enumerate(Q)]
     r = _ok(c.post("/api/v1/tools/lltm-fit", json={"Q": Q, "successes": succ, "feature_names": ["steps", "const"]}))

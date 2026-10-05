@@ -3,7 +3,7 @@
   "info": {
     "title": "DreamMachine API",
     "description": "Backend API for DreamMachine. Contract: docs/API_CONTRACT.md.",
-    "version": "0.2.0"
+    "version": "0.2.1"
   },
   "paths": {
     "/api/v1/health": {
@@ -4124,12 +4124,25 @@
           },
           "paper": {
             "$ref": "#/components/schemas/PaperPreset"
+          },
+          "prompt_versions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Prompt Versions"
+          },
+          "default_prompt_version": {
+            "type": "string",
+            "title": "Default Prompt Version"
           }
         },
         "type": "object",
         "required": [
           "explore",
-          "paper"
+          "paper",
+          "prompt_versions",
+          "default_prompt_version"
         ],
         "title": "Presets"
       },
@@ -4585,6 +4598,50 @@
               }
             ],
             "title": "Progress"
+          },
+          "lastline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastline"
+          },
+          "lastline_v0": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastline V0"
+          },
+          "format_ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format Ok"
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Truncated"
           }
         },
         "type": "object",
@@ -4598,7 +4655,11 @@
           "slip_ops",
           "slip_operand_digits",
           "divergence_step",
-          "progress"
+          "progress",
+          "lastline",
+          "lastline_v0",
+          "format_ok",
+          "truncated"
         ],
         "title": "ResponseDiagnosis"
       },

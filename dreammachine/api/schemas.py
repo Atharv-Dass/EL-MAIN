@@ -562,6 +562,8 @@ class PaperPreset(Model_):
 class Presets(Model_):
     explore: ExplorePreset
     paper: PaperPreset
+    prompt_versions: list[str]       # 0.2.1
+    default_prompt_version: str      # 0.2.1: the project prompt (PLAN.md D10)
 
 
 class Component(Model_):
@@ -620,6 +622,10 @@ class ResponseDiagnosis(Model_):
     slip_operand_digits: int | None
     divergence_step: int | None
     progress: float | None
+    lastline: str | None             # 0.2.1: last number on the last line (tolerant), null if none / not recorded
+    lastline_v0: str | None          # 0.2.1: first number on the last line (the friend's extractor)
+    format_ok: bool | None           # 0.2.1: last line is strictly a bare number
+    truncated: bool | None           # 0.2.1: the answer hit max_new_tokens (null if the runner did not report it)
 
 
 class ResponseRecord(Model_):

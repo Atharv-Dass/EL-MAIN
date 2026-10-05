@@ -50,12 +50,12 @@ Windows spills VRAM into system RAM instead of OOM — keep batches inside 8 GB)
 - One `prompt_version` per project, set at the top level of a config. Benchmarks and extractors: `docs/BENCHMARKS.md`.
 
 ## API contract
-- **Contract version: `0.2.0`** — IMPLEMENTED (B7). `dreammachine/api/app.py` (`API_VERSION`), response models in
+- **Contract version: `0.2.1`** — IMPLEMENTED (B7; 0.2.1 adds per-answer lastline/format_ok/truncated and prompt versions in /presets). `dreammachine/api/app.py` (`API_VERSION`), response models in
   `dreammachine/api/schemas.py`, `docs/openapi.json` from `python -m dreammachine.api.export_openapi`,
   guarded by `tests/test_api_contract.py`. The old unprefixed routes are gone.
 - Base URL: `http://127.0.0.1:8000/api/v1`. Every route/shape change: update `docs/API_CONTRACT.md`, bump the
   version, add a changelog line, regenerate `docs/openapi.json`, update this list — same commit.
-- Endpoints (contract 0.2.0):
+- Endpoints (contract 0.2.1):
   ```
   GET    /api/v1/health
   GET    /api/v1/system

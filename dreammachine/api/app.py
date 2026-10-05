@@ -47,11 +47,13 @@ from ..jobs.requests import (
 )
 from ..jobs.results import RunData, build_results, compare_runs, error_shares, paper_eligibility
 from ..jobs.steps import STAGE_LABELS, STAGES, arm_keys, label
+from ..experiments.evaluate import lastline_fields
+from ..models.prompts import DEFAULT_PROMPT, PROMPTS
 from ..provenance import package_versions
 from ..store.db import Store
 from . import schemas as S
 
-API_VERSION = "0.2.0"          # must equal "Contract version" in docs/API_CONTRACT.md (tests/test_api_contract.py)
+API_VERSION = "0.2.1"          # must equal "Contract version" in docs/API_CONTRACT.md (tests/test_api_contract.py)
 PREFIX = "/api/v1"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CORS = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"]
@@ -59,6 +61,7 @@ HTTP_STATUS = {"not_found": 404, "conflict": 409, "not_ready": 409, "paper_prote
                "paper_mode_locked": 422, "reuse_mismatch": 422, "invalid_feature": 422, "unknown_model": 422,
                "unknown_benchmark": 422, "internal_error": 500}
 WORKER_STALE_S = 30
+DIAG_EXTRA = ("lastline", "lastline_v0", "format_ok", "truncated")   # contract 0.2.1
 LOG_CHUNK = 64 * 1024
 ARM_KEY = re.compile(r"^(real_only|untargeted|matched_control|targeted)_r\d+(\.\d+)?_s\d+$")
 log = logging.getLogger("dreammachine.api")
@@ -443,7 +446,8 @@ def create_app(store: Store | None = None, components_path: Path | None = None,
                                          f"{'/'.join(f'{r:g}' for r in ratios)} for targeted, equal token budget.",
                           "fixed": {"arms": list(ARMS), "seeds": list(pp.seeds), "main_ratio": main_ratio,
                                     "targeted_ratios": ratios},
-                          "settable": ["name", "model"], "n_steps": 5 + 2 * n_keys + 1}}
+                          "settable": ["name", "model"], "n_steps": 5 + 2 * n_keys + 1},
+                "prompt_versions": sorted(PROMPTS), "default_prompt_version": DEFAULT_PROMPT}
 
     @api.get("/components", response_model=list[S.Component])
     def components():
@@ -652,6 +656,9 @@ def create_app(store: Store | None = None, components_path: Path | None = None,
         get_run(run_id)
         rows = db.get_responses(run_id, limit=limit, offset=offset, correct=correct, error_type=error_type,
                                 source=source)
+        for r in rows:   # 0.2.1 fields; null for answers stored before they existed
+            for k in DIAG_EXTRA:
+                r["diagnosis"].setdefault(k, None)
         return page([_nan_to_none(r) for r in rows],
                     db.count_responses(run_id, correct=correct, error_type=error_type, source=source), limit, offset)
 
@@ -691,7 +698,7 @@ def create_app(store: Store | None = None, components_path: Path | None = None,
                 raise JobError("validation_error", f"invalid reference solution: {e}")
         else:
             raise JobError("validation_error", "give either `item` or `question` + `reference_solution`")
-        return classify(req.response, trace).to_dict()
+        return {**classify(req.response, trace).to_dict(), **lastline_fields(req.response), "truncated": None}
 
     @api.post("/tools/lltm-fit")
     def tools_lltm_fit(req: S.LLTMRequest) -> dict:

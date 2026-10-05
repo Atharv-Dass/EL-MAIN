@@ -1,6 +1,6 @@
 # DreamMachine — API Contract (backend ⇄ frontend)
 
-**Contract version: `0.2.0`** · Status: **IMPLEMENTED** (designed 2026-10-04, revised after review; implemented
+**Contract version: `0.2.1`** · Status: **IMPLEMENTED** (designed 2026-10-04, revised after review; implemented
 at backend milestone B7 on 2026-10-05; `tests/test_api_contract.py` keeps the app and this file in step).
 
 This file is the **only** thing the frontend may rely on. The frontend (to be built by Manus AI) talks to the
@@ -179,7 +179,7 @@ Example values below are **made up** to show the shape. They are not real result
 
 ### 6.1 System and catalog
 
-**`GET /health`** → `{ "status": "ok", "version": "0.1.0", "api_version": "0.2.0" }` (`version` = the Python package version; `api_version` = this contract's version).
+**`GET /health`** → `{ "status": "ok", "version": "0.1.0", "api_version": "0.2.1" }` (`version` = the Python package version; `api_version` = this contract's version).
 
 **`GET /system`** →
 ```json
@@ -229,11 +229,14 @@ Source: `configs/models.yaml`. `params_b` is approximate. Gated models need `hug
     "fixed": { "arms": ["real_only", "untargeted", "matched_control", "targeted"], "seeds": [0, 1, 2], "main_ratio": 3, "targeted_ratios": [1, 3, 9] },
     "settable": ["name", "model"],
     "n_steps": 42
-  }
+  },
+  "prompt_versions": ["dm_v1", "qwen_boxed", "v2_700"],
+  "default_prompt_version": "qwen_boxed"
 }
 ```
 (`n_steps` = 5 setup steps + 18 train + 18 evaluate + compare = 42 with the current `main.yaml`. Numbers in
-`explore.defaults` come from `configs/explore.yaml` and may change.)
+`explore.defaults` come from `configs/explore.yaml` and may change. `prompt_versions` lists the registered prompts;
+`default_prompt_version` is the project prompt every job uses — for display only, it cannot be set per job.)
 
 **`GET /components`** → `[{ "id": "C10", "component": "...", "path": "...", "status": "IMPLEMENTED", "verify": "...", "notes": "..." }]`
 
@@ -473,11 +476,15 @@ pipeline versions.
 ```json
 { "items": [ { "example_id": "gsm8k-test-12", "source": "gsm8k", "sample": 0, "text": "…model answer…", "correct": false,
                "error_type": "ARITHMETIC_SLIP",
-               "diagnosis": { "error_type": "ARITHMETIC_SLIP", "predicted": "118", "gold": "128", "n_equations": 3, "n_slips": 1, "slip_index": 1, "slip_ops": ["+"], "slip_operand_digits": 2, "divergence_step": null, "progress": 0.66 },
+               "diagnosis": { "error_type": "ARITHMETIC_SLIP", "predicted": "118", "gold": "128", "n_equations": 3, "n_slips": 1, "slip_index": 1, "slip_ops": ["+"], "slip_operand_digits": 2, "divergence_step": null, "progress": 0.66,
+                              "lastline": "118", "lastline_v0": "118", "format_ok": false, "truncated": false },
                "features": {} } ],
   "total": 177, "limit": 50, "offset": 0 }
 ```
-`features` is `{}` for real (GSM8K) problems.
+`features` is `{}` for real (GSM8K) problems. `lastline` / `lastline_v0` / `format_ok` / `truncated` (0.2.1) are `null`
+for answers stored before they were recorded; `truncated` is also `null` when the model runner does not report it.
+`lastline` = last number on the last line (tolerant), `lastline_v0` = first number on that line, `format_ok` = the last
+line is strictly a bare number, `truncated` = the answer hit the token limit.
 
 **`GET /runs/{run_id}/artifacts/{key}`** → the stored JSON value.
 
@@ -697,6 +704,7 @@ interface ResponseRecord {
     error_type: ErrorType; predicted: string | null; gold: string | null;
     n_equations: number; n_slips: number; slip_index: number | null; slip_ops: string[];
     slip_operand_digits: number | null; divergence_step: number | null; progress: number | null;
+    lastline: string | null; lastline_v0: string | null; format_ok: boolean | null; truncated: boolean | null;   // 0.2.1
   };
   features: Partial<Record<Feature, number>>;               // {} for real problems
 }
@@ -751,3 +759,4 @@ step:  pending -> running -> done | failed | cancelled
 |---|---|---|
 | 0.1.0 | 2026-10-04 | First draft: pipelines, benchmark runs, catalog, results, runs drill-down, tools. Not implemented yet. |
 | 0.2.0 | 2026-10-04 | After review: mock mode + "MOCK DATA" badge and where the frontend runs (§1.1); create endpoints return 202 with a `worker_not_running` warning instead of 503; job-id rules and 404 on the wrong path; UTF-8-safe log chunks; `samples` is now `Page<TrainingSample>`; new `DELETE` for explore pipelines and benchmark runs (`paper_protected`); arm dataset download; `eta_s`, `output_dir`, `output_bytes`, step `metrics`, `/system.disk`; full TypeScript types incl. `ratio` vs `ratios`. Not implemented yet. |
+| 0.2.1 | 2026-10-05 | Additive: `ResponseRecord.diagnosis` gains `lastline`, `lastline_v0`, `format_ok`, `truncated`; `GET /presets` gains `prompt_versions` and `default_prompt_version`. |
