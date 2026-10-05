@@ -42,6 +42,37 @@ def extract_answer(text: str) -> Fraction | None:
     return parse_number(hits[-1]) if hits else None
 
 
+_BARE_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def last_line(text: str) -> str:
+    """The last non-empty line, after removing <think> blocks."""
+    lines = [ln.strip() for ln in strip_reasoning_tags(text).splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
+def extract_lastline(text: str) -> Fraction | None:
+    """Final-line answer for prompts like v2_700 ("a final line containing only the numeric answer").
+    Tolerant: ignores bold markers (**), dollar signs, thousands commas and a trailing period, and takes
+    the *last* number on the last non-empty line, so "3 * 6 = 18" gives 18."""
+    line = last_line(text).replace("**", "").replace("$", "").strip().rstrip(".").strip()
+    hits = _ANY_NUM.findall(line)
+    return parse_number(hits[-1]) if hits else None
+
+
+def lastline_format_ok(text: str) -> bool:
+    """True only if the last non-empty line is strictly a bare number (e.g. "18", "-2.5"):
+    no units, $, commas, bold, trailing period or other text. Recorded next to the tolerant value."""
+    return bool(_BARE_NUMBER.fullmatch(last_line(text)))
+
+
+def extract_lastline_v0(text: str) -> Fraction | None:
+    """The friend's Colab behaviour, kept only to measure disagreement: the *first* number on the last
+    line, so "3 * 6 = 18" gives 3 (the bug PLAN.md §8.5 fixes in `extract_lastline`)."""
+    hits = _ANY_NUM.findall(last_line(text))
+    return parse_number(hits[0]) if hits else None
+
+
 def answers_match(pred: Fraction | None, gold: Fraction | int | str, tol: Fraction = Fraction(1, 10**6)) -> bool:
     if pred is None:
         return False

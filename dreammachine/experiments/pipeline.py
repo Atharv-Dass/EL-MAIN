@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ..data.loaders import Example, from_items, load_gsm8k, load_gsm_symbolic, load_jsonl, save_jsonl
+from ..data.loaders import Example, from_items, load_gsm8k, load_jsonl, save_jsonl
 from ..data.mixer import TrainExample, mix, to_train, whitespace_tokens
 from ..diagnosis.agreement import stratified_sample
 from ..diagnosis.lltm import LLTMResult, bootstrap_lltm, fit_lltm
@@ -65,6 +65,7 @@ class Config:
     seeds: list[int] = field(default_factory=lambda: [0, 1, 2])
     real_data: str = "gsm8k"          # "gsm8k" or a path to a JSONL of Examples
     eval_data: dict = field(default_factory=dict)  # optional local JSONL overrides
+    prompt_version: str = "dm_v1"     # one prompt for benchmark, diagnosis, training and evaluation (D10)
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":
@@ -80,7 +81,9 @@ class Config:
         return p
 
     def gen(self, **overrides: Any) -> GenConfig:
-        return GenConfig(**{**self.generation, **overrides})
+        if "prompt_version" in self.generation:
+            raise ValueError("set prompt_version at the top level of the config, not under generation")
+        return GenConfig(**{**self.generation, "prompt_version": self.prompt_version, **overrides})
 
     def grid(self, section: dict) -> ProbeGrid:
         g = section.get("grid", {})
@@ -120,7 +123,7 @@ def screen(cfg: Config, store: Store, runner_factory: RunnerFactory) -> dict:
     probes = from_items(factorial_probe_set(cfg.grid(s), per_cell=s.get("probe_per_cell", 1), seed=11))
     rows = []
     for model in cfg.candidates:
-        run = store.create_run(f"{cfg.name}:screen:{model}", "screen", {"model": model, **s})
+        run = store.create_run(f"{cfg.name}:screen:{model}", "screen", {"model": model, "prompt_version": cfg.prompt_version, **s})
         runner = runner_factory(model, None, cfg.gen())
         recs = evaluate(runner, gsm + probes)
         store.add_responses(run, recs)
@@ -145,7 +148,7 @@ def screen(cfg: Config, store: Store, runner_factory: RunnerFactory) -> dict:
 # ------------------------------------------------------------------ diagnose
 def diagnose(cfg: Config, store: Store, runner_factory: RunnerFactory) -> dict:
     d = cfg.diagnose
-    run = store.create_run(f"{cfg.name}:diagnose", "diagnose", {"model": cfg.model, **d})
+    run = store.create_run(f"{cfg.name}:diagnose", "diagnose", {"model": cfg.model, "prompt_version": cfg.prompt_version, **d})
     probe_items = factorial_probe_set(cfg.grid(d), per_cell=d.get("probe_per_cell", 4), seed=d.get("seed", 0))
     gen = cfg.gen(n_samples=d.get("n_samples", 3), temperature=d.get("temperature", 0.7))
     recs = evaluate(runner_factory(cfg.model, None, gen), from_items(probe_items))
@@ -274,7 +277,7 @@ def train_arm(cfg: Config, store: Store, arm: str, ratio: float, seed: int) -> P
 
     rows = _read_train(_arm_path(cfg, arm, ratio, seed))
     out = adapter_dir(cfg, arm, ratio, seed)
-    tcfg = TrainConfig(base_model=cfg.model, output_dir=str(out), seed=seed, **cfg.train)
+    tcfg = TrainConfig(base_model=cfg.model, output_dir=str(out), seed=seed, prompt_version=cfg.prompt_version, **cfg.train)
     run = store.create_run(f"{cfg.name}:train:{out.name}", "train",
                            {"arm": arm, "ratio": ratio, "seed": seed, "n": len(rows)})
     try:
@@ -287,18 +290,32 @@ def train_arm(cfg: Config, store: Store, arm: str, ratio: float, seed: int) -> P
 
 
 # ------------------------------------------------------------------ evaluate
-def eval_sets(cfg: Config) -> dict[str, list[Example]]:
+def default_benchmarks(cfg: Config) -> list[str]:
+    """The benchmark list used before the registry existed; still the default when `eval.benchmarks` is unset."""
+    return ["gsm8k", *(f"gsm_symbolic:{v}" for v in cfg.eval.get("gsm_symbolic", [])),
+            "probes_train_families", "probes_heldout_families"]
+
+
+def benchmark_options(cfg: Config, name: str) -> dict[str, Any]:
+    """limit + loader options for one benchmark, from the config (local JSONL overrides, probe grid)."""
     e = cfg.eval
+    if name == "gsm8k":
+        return {"limit": e.get("gsm8k_limit"), "path": cfg.eval_data.get("gsm8k_test")}
+    if name.startswith("gsm_symbolic:"):
+        v = name.split(":", 1)[1]
+        return {"limit": e.get("gsm_symbolic_limit"), "path": cfg.eval_data.get(f"gsm_symbolic_{v}")}
+    if name.startswith("probes_"):
+        return {"grid": cfg.grid(e), "per_cell": e.get("probe_per_cell", 2)}
+    return {}
+
+
+def eval_sets(cfg: Config) -> dict[str, list[Example]]:
+    """Every evaluation benchmark, read through the registry (`eval.benchmarks`, default: the original list)."""
+    from ..benchmarks import registry
+
     sets: dict[str, list[Example]] = {}
-    lim = e.get("gsm8k_limit")
-    sets["gsm8k"] = _examples(cfg, "gsm8k_test", lambda: load_gsm8k("test", limit=lim))[:lim]
-    for v in e.get("gsm_symbolic", []):
-        sets[f"gsm_symbolic:{v}"] = _examples(cfg, f"gsm_symbolic_{v}",
-                                              lambda v=v: load_gsm_symbolic(v, limit=e.get("gsm_symbolic_limit")))
-    per = e.get("probe_per_cell", 2)
-    sets["probes_train_families"] = from_items(factorial_probe_set(cfg.grid(e), per_cell=per, seed=777))
-    sets["probes_heldout_families"] = from_items(
-        factorial_probe_set(cfg.grid(e), per_cell=per, seed=778, split="heldout"))
+    for name in cfg.eval.get("benchmarks") or default_benchmarks(cfg):
+        sets[name] = registry.get(name).load(**benchmark_options(cfg, name))
     return sets
 
 
@@ -308,7 +325,8 @@ def evaluate_model(cfg: Config, store: Store, runner_factory: RunnerFactory, arm
     adapter = None if arm == "base" else str(adapter_dir(cfg, arm, ratio, seed) / "adapter")
     tag = "base" if arm == "base" else f"{arm}_r{ratio:g}_s{seed}"
     run = store.create_run(f"{cfg.name}:eval:{tag}", "eval",
-                           {"arm": arm, "ratio": ratio, "seed": seed, "adapter": adapter})
+                           {"arm": arm, "ratio": ratio, "seed": seed, "adapter": adapter,
+                            "prompt_version": cfg.prompt_version})
     runner = runner_factory(cfg.model, adapter, cfg.gen())
     diag = json.loads((cfg.out / "diagnosis.json").read_text(encoding="utf-8"))
     metrics: dict[str, Any] = {"arm": arm, "ratio": ratio, "seed": seed}

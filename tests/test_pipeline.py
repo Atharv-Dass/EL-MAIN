@@ -55,6 +55,8 @@ def env(tmp_path, monkeypatch):
         return exs
 
     monkeypatch.setattr(P, "from_items", recording_from_items)
+    from dreammachine.benchmarks import builtin  # eval probe sets are built here since B2
+    monkeypatch.setattr(builtin, "from_items", recording_from_items)
 
     def fake_gsm(n, seed):
         exs = from_items(generate_many(GenSpec(steps=3, digits=2), n, seed=seed))

@@ -40,10 +40,14 @@ Windows spills VRAM into system RAM instead of OOM — keep batches inside 8 GB)
 
 ## Prompt versions (PLAN.md §8.5, D10)
 - `dm_v1` (default) = `INSTRUCTION` in `dreammachine/models/prompts.py`, placed in the user turn.
-- `v2_700` (friend's prompt; text received 2026-10-04; to be registered in B2 as `PROMPTS["v2_700"]`,
-  byte-for-byte, used as the SYSTEM message). Exact text between the markers, no added spaces or newline:
+- `v2_700` (friend's prompt; text received 2026-10-04; registered in B2 as `PROMPTS["v2_700"]`,
+  byte-for-byte, used as the SYSTEM message; pinned by sha256 in `tests/test_prompts.py`). Exact text between the markers, no added spaces or newline:
 
   `>>>`Solve the math problem step by step. At the end, write a separate final line containing only the numeric answer, with no units, dollar sign, commas, bold formatting, or extra text. Example final line: 18.`<<<`
+
+- `qwen_boxed` (B2): the Qwen3 model card's math prompt, after the question. Best on the dev slice
+  (`docs/RUNNING.md` §7); the project default stays `dm_v1` until the team decides (D10).
+- One `prompt_version` per project, set at the top level of a config. Benchmarks and extractors: `docs/BENCHMARKS.md`.
 
 ## API contract
 - **Contract version: `0.2.0`** — status DRAFT; implemented at milestone B7. Until then the app still serves

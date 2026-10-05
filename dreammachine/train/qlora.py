@@ -37,16 +37,17 @@ class TrainConfig:
     weight_decay: float = 0.0
     gradient_checkpointing: bool = True
     seed: int = 0
+    prompt_version: str = "dm_v1"   # must equal the evaluation prompt (PLAN.md D10)
     logging_steps: int = 10
     save_steps: int = 200
     save_total_limit: int = 2
     extra: dict = field(default_factory=dict)
 
 
-def tokenize_example(tokenizer, ex: TrainExample, max_len: int) -> dict | None:
+def tokenize_example(tokenizer, ex: TrainExample, max_len: int, prompt_version: str = "dm_v1") -> dict | None:
     """Prompt tokens get label -100, so only the completion is learned.
     Returns None if truncation would remove the entire completion."""
-    prompt = format_prompt(ex.prompt, tokenizer)
+    prompt = format_prompt(ex.prompt, tokenizer, prompt_version)
     completion = ex.completion.strip() + (tokenizer.eos_token or "")
     p_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
     c_ids = tokenizer(completion, add_special_tokens=False)["input_ids"]
@@ -116,7 +117,7 @@ def train(cfg: TrainConfig, examples: list[TrainExample]) -> Path:
 
     data, skipped = [], 0
     for ex in examples:
-        t = tokenize_example(tokenizer, ex, cfg.max_seq_len)
+        t = tokenize_example(tokenizer, ex, cfg.max_seq_len, cfg.prompt_version)
         if t is None:
             skipped += 1
         else:

@@ -13,6 +13,7 @@ from typing import Callable
 import numpy as np
 
 from ..data.loaders import Example
+from ..diagnosis.extract import extract_lastline, extract_lastline_v0, lastline_format_ok
 from ..diagnosis.taxonomy import ErrorType, classify
 from ..generator.features import FEATURES
 from ..models.runner import Runner
@@ -47,6 +48,7 @@ def evaluate(runner: Runner, examples: list[Example], chunk: int = 64,
             for k, text in enumerate(samples):
                 d = classify(text, trace)
                 diag = d.to_dict()
+                diag.update(lastline_fields(text))
                 if cut is not None:
                     diag["truncated"] = bool(cut[i][k])
                 records.append(ResponseRecord(
@@ -56,6 +58,17 @@ def evaluate(runner: Runner, examples: list[Example], chunk: int = 64,
         if progress:
             progress(min(start + chunk, len(examples)), len(examples))
     return records
+
+
+def _str(x) -> str | None:
+    return None if x is None else str(x)
+
+
+def lastline_fields(text: str) -> dict:
+    """Final-line readings stored next to the classifier's answer (`predicted`, from extract_answer),
+    for comparing prompt versions (PLAN.md §8.5). They do not change the error label."""
+    return {"lastline": _str(extract_lastline(text)), "lastline_v0": _str(extract_lastline_v0(text)),
+            "format_ok": lastline_format_ok(text)}
 
 
 def summarize(records: list[ResponseRecord]) -> dict:
@@ -75,6 +88,9 @@ def summarize(records: list[ResponseRecord]) -> dict:
         "accuracy_by_source": {s: float(np.mean(v)) for s, v in sorted(by_source.items())},
         "error_distribution": {k: v / n_err for k, v in sorted(errors.items())} if n_err else {},
     }
+    ok = [r.diagnosis["format_ok"] for r in records if "format_ok" in r.diagnosis]
+    if ok:
+        out["format_ok_share"] = float(np.mean(ok))
     flags = [r.diagnosis["truncated"] for r in records if "truncated" in r.diagnosis]
     if flags:
         out["truncated_share"] = float(np.mean(flags))

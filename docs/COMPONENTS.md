@@ -17,7 +17,7 @@ without asking first. Every component names the command that verifies it.
 | C2 | Q-matrix features (steps, magnitude, ops, carries, distractors, merge) | `dreammachine/generator/features.py` | IMPLEMENTED | `pytest tests/test_generator.py -k "carr or borrow"` | Carries checked against brute force |
 | C3 | Surface families (8 train, 2 held out) | `dreammachine/generator/families.py` | IMPLEMENTED | Read 20 samples (see below) | Needs a human read for naturalness |
 | C4 | Constrained sampler + GSM8K-style solutions | `dreammachine/generator/sampler.py` | IMPLEMENTED | `pytest tests/test_generator.py` | 10k-item property test |
-| C5 | Answer extraction (####, \\boxed, 'answer is', last number; strips <think>) | `dreammachine/diagnosis/extract.py` | IMPLEMENTED | `pytest tests/test_diagnosis.py -k extract` | |
+| C5 | Answer extraction (####, \\boxed, 'answer is', last number; strips <think>) | `dreammachine/diagnosis/extract.py` | IMPLEMENTED | `pytest tests/test_diagnosis.py -k extract` | B2: + `extract_lastline` (tolerant), `lastline_format_ok`, `extract_lastline_v0` (`pytest tests/test_extract_lastline.py`) |
 | C6 | CoT equation parser + exact re-check (safe AST eval, chained eqs, rounding) | `dreammachine/diagnosis/cot_parse.py` | IMPLEMENTED | `pytest tests/test_diagnosis.py -k parse` | |
 | C7 | Reference traces (DAG or GSM8K `<<>>` annotations) + alignment | `dreammachine/diagnosis/align.py` | IMPLEMENTED | `pytest tests/test_diagnosis.py -k gsm8k` | Word-numbers ('half') invisible on real GSM8K. GSM-Symbolic has no `<<>>` annotations, so its reference trace is empty |
 | C8 | Error taxonomy: FORMAT / SLIP / DISTRACTOR / PLAN / UNVERIFIABLE | `dreammachine/diagnosis/taxonomy.py` | IMPLEMENTED | `pytest tests/test_diagnosis.py` | Replaces the Phase-1 taxonomy; needs team sign-off |
@@ -31,6 +31,10 @@ without asking first. Every component names the command that verifies it.
 | C15 | Experiment stages + CLI + configs | `dreammachine/experiments/`, `configs/` | IMPLEMENTED | `pytest tests/test_pipeline.py` | Recovers a planted weakness end to end. B0: UTF-8 file I/O (`pytest tests/test_windows.py`) |
 | C16 | Results store (stdlib SQLite) | `dreammachine/store/` | IMPLEMENTED | `pytest tests/test_api.py -k runs` | Plain sqlite3 instead of SQLModel (zero dependencies) |
 | C17 | FastAPI backend | `dreammachine/api/` | IMPLEMENTED | `pytest tests/test_api.py` | Serves results; GPU jobs stay on the CLI |
+| C18 | Benchmark registry, built-ins (GSM8K, GSM-Symbolic, probe sets), plug-ins | `dreammachine/benchmarks/` | IMPLEMENTED | `pytest tests/test_benchmarks.py` | `eval_sets` reads it; default list gives identical examples to before |
+| C19 | Standalone benchmark runner (resumable JSONL, per-row provenance) + results importer | `dreammachine/benchmarks/runner.py`, `importer.py`, `__main__.py` | IMPLEMENTED | `pytest tests/test_benchmark_runner.py` | GPU-verified CLI check: Qwen3-0.6B, 8 GSM8K items, dm_v1 + v2_700, resume. Importer tested on a fixture only (friend's file not received) |
+| C20 | Prompt versions (dm_v1, v2_700, qwen_boxed) + `prompt_version` through runner, trainer, configs | `dreammachine/models/prompts.py` | IMPLEMENTED | `pytest tests/test_prompts.py` | v2_700 pinned by sha256; no-system-role fallback = dm_v1-style user turn |
+| C21 | Model catalog + provenance helper | `configs/models.yaml`, `dreammachine/models/catalog.py`, `dreammachine/provenance.py` | IMPLEMENTED | `pytest tests/test_benchmarks.py -k catalog` | params_b approximate |
 
 ## How to verify C3 (the manual read)
 ```bash

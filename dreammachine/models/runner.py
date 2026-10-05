@@ -45,6 +45,7 @@ class GenConfig:
     top_p: float = 0.95
     batch_size: int = 16       # generated sequences per forward batch (questions x n_samples)
     seed: int = 0
+    prompt_version: str = "dm_v1"   # see models/prompts.py::PROMPTS
 
 
 class HFRunner:
@@ -93,7 +94,7 @@ class HFRunner:
         torch = self._torch
         g = self.gen
         torch.manual_seed(g.seed)
-        prompts = [format_prompt(q, self.tokenizer) for q in questions]
+        prompts = [format_prompt(q, self.tokenizer, g.prompt_version) for q in questions]
         out: list[list[str]] = []
         self.last_truncated = []  # per question, per sample: hit max_new_tokens without a stop token
         stop_ids = self._stop_ids()
