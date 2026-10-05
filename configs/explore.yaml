@@ -1,0 +1,65 @@
+# Explore preset (PLAN.md §6.1): the defaults behind an explore pipeline or benchmark run.
+# A copy of main.yaml with smaller, faster settings. EXPLORE RUNS ARE NEVER PAPER EVIDENCE.
+#
+# The numbers below are STARTING GUESSES, sized from the B1 measurements in docs/RUNNING.md §6-7
+# (Qwen3-0.6B: ~0.4-0.5 problems/s; Qwen3-1.7B: ~0.26-0.31 problems/s at 512 tokens, batch 32).
+# Replace them with measured values after the first real explore run (B8) and say so here.
+#
+# name / output_dir / db / model / seeds / benchmarks / limits are filled in per job by the job system.
+name: explore
+output_dir: runs/pipelines/explore
+db: runs/dreammachine.db
+model: Qwen/Qwen3-0.6B
+
+generation:
+  max_new_tokens: 512     # measured: 256 cut off 17.5% of answers
+  batch_size: 32          # sequences per batch; measured 1.8x faster than 16, 64 does not fit in 8 GB
+  n_samples: 1
+  temperature: 0.0
+
+diagnose:
+  probe_per_cell: 2       # 216 cells x 2 = 432 items, x3 samples = 1296 generations (guess: ~30-45 min on 0.6B)
+  n_samples: 3
+  temperature: 0.7
+  bootstrap: 200
+  natural_pool: 5000
+  annotate: 50
+  seed: 0
+
+data:
+  pool_size: 20000
+  natural_size: 10000
+  token_budget: 200000    # whitespace tokens per arm (main.yaml: 600000)
+  ratios: [3]             # replaced by the request's single `ratio`
+  main_ratio: 3
+  p_band: [0.3, 0.7]
+
+train:
+  load_in_4bit: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  learning_rate: 0.0002
+  num_epochs: 2
+  per_device_batch_size: 4
+  grad_accum: 4
+  max_seq_len: 512
+  gradient_checkpointing: true
+  save_steps: 200
+
+eval:
+  benchmark_limit: 300    # problems per benchmark (null = full sets); the request may override (>= 10)
+  gsm_symbolic: [main]
+  probe_per_cell: 2
+  load_in_4bit: false     # 1-2B models fit in bf16; must equal for base and fine-tuned models
+
+preflight:
+  min_free_gb: 10         # a starting guess; B1 measured ~110 MB per smoke run, adjust after B8
+
+gpu:
+  required: true
+  memory_fraction: 0.92   # cap PyTorch below 8 GB so Windows cannot spill VRAM into system RAM (RUNNING.md §8)
+
+seeds: [0]
+real_data: gsm8k
+prompt_version: dm_v1

@@ -19,7 +19,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import numpy as np
 
@@ -33,6 +33,7 @@ from ..diagnosis.targeting import (
 )
 from ..generator.features import FEATURES
 from ..generator.probes import ProbeGrid, build_pool, factorial_probe_set
+from ..errors import NoSignificantWeakness
 from ..models.runner import GenConfig, Runner
 from ..store.db import Store
 from .evaluate import ResponseRecord, evaluate, item_counts, slice_accuracy, summarize
@@ -66,6 +67,10 @@ class Config:
     real_data: str = "gsm8k"          # "gsm8k" or a path to a JSONL of Examples
     eval_data: dict = field(default_factory=dict)  # optional local JSONL overrides
     prompt_version: str = "dm_v1"     # one prompt for benchmark, diagnosis, training and evaluation (D10)
+    preflight: dict = field(default_factory=dict)   # min_free_gb (PLAN.md S0)
+    gpu: dict = field(default_factory=dict)         # memory_fraction: VRAM cap per step (docs/RUNNING.md §8)
+    job_id: str | None = None         # set by the job system: links stored runs to their pipeline / benchmark run
+    mode: str | None = None           # "explore" | "paper" (set by the job system)
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":
@@ -88,6 +93,13 @@ class Config:
     def grid(self, section: dict) -> ProbeGrid:
         g = section.get("grid", {})
         return ProbeGrid(**{k: tuple(v) for k, v in g.items()}) if g else ProbeGrid()
+
+
+def _new_run(store: Store, cfg: Config, name: str, kind: str, config: dict) -> str:
+    return store.create_run(name, kind, config, job_id=cfg.job_id, mode=cfg.mode)
+
+
+Progress = Callable[[int, int], None]   # progress(done, total); may raise errors.Cancelled at a safe point
 
 
 def _examples(cfg: Config, key: str, loader: Callable[[], list[Example]]) -> list[Example]:
@@ -123,7 +135,7 @@ def screen(cfg: Config, store: Store, runner_factory: RunnerFactory) -> dict:
     probes = from_items(factorial_probe_set(cfg.grid(s), per_cell=s.get("probe_per_cell", 1), seed=11))
     rows = []
     for model in cfg.candidates:
-        run = store.create_run(f"{cfg.name}:screen:{model}", "screen", {"model": model, "prompt_version": cfg.prompt_version, **s})
+        run = _new_run(store, cfg, f"{cfg.name}:screen:{model}", "screen", {"model": model, "prompt_version": cfg.prompt_version, **s})
         runner = runner_factory(model, None, cfg.gen())
         recs = evaluate(runner, gsm + probes)
         store.add_responses(run, recs)
@@ -146,12 +158,13 @@ def screen(cfg: Config, store: Store, runner_factory: RunnerFactory) -> dict:
 
 
 # ------------------------------------------------------------------ diagnose
-def diagnose(cfg: Config, store: Store, runner_factory: RunnerFactory) -> dict:
+def diagnose(cfg: Config, store: Store, runner_factory: RunnerFactory, progress: Progress | None = None) -> dict:
     d = cfg.diagnose
-    run = store.create_run(f"{cfg.name}:diagnose", "diagnose", {"model": cfg.model, "prompt_version": cfg.prompt_version, **d})
+    run = _new_run(store, cfg, f"{cfg.name}:diagnose", "diagnose",
+                   {"model": cfg.model, "prompt_version": cfg.prompt_version, **d})
     probe_items = factorial_probe_set(cfg.grid(d), per_cell=d.get("probe_per_cell", 4), seed=d.get("seed", 0))
     gen = cfg.gen(n_samples=d.get("n_samples", 3), temperature=d.get("temperature", 0.7))
-    recs = evaluate(runner_factory(cfg.model, None, gen), from_items(probe_items))
+    recs = evaluate(runner_factory(cfg.model, None, gen), from_items(probe_items), progress=progress)
     store.add_responses(run, recs)
 
     Q, s, n, _ = item_counts(recs)
@@ -200,50 +213,147 @@ def _arm_path(cfg: Config, arm: str, ratio: float, seed: int) -> Path:
     return cfg.out / "data" / f"{arm}_r{ratio:g}_s{seed}.jsonl"
 
 
-def build_data(cfg: Config, store: Store) -> dict:
-    dz = cfg.data
+TARGET_STRATEGIES = ("auto", "feature", "untargeted")
+
+
+def resolve_target(cfg: Config, strategy: str = "auto", feature: str | None = None) -> dict:
+    """Stage choose_target (PLAN.md S3): decide the feature the training data aims at and write target.json.
+
+    auto        diagnosis.json["target"] (raises NoSignificantWeakness if there is none)
+    feature     a named feature; threshold from the same natural pool diagnose uses; warns if not significant
+    untargeted  no target (only the untargeted and real_only arms can be built)
+    """
+    if strategy not in TARGET_STRATEGIES:
+        raise ValueError(f"target strategy must be one of {TARGET_STRATEGIES}")
     diag = json.loads((cfg.out / "diagnosis.json").read_text(encoding="utf-8"))
-    if not diag["target"]:
-        raise RuntimeError("diagnosis found no significant weakness; nothing to target")
-    lltm = LLTMResult.from_dict(diag["lltm"])
-    target, threshold = diag["target"]["feature"], diag["threshold"]
+    weaknesses = {w["feature"]: w for w in diag.get("weaknesses", [])}
+    warnings: list[str] = []
+    threshold = None
+    if strategy == "auto":
+        if not diag.get("target"):
+            raise NoSignificantWeakness(
+                "diagnosis found no significant weakness. Start an explore run with target 'feature' (a named "
+                "feature) or 'untargeted'; it can reuse this baseline and diagnosis.")
+        feature, threshold = diag["target"]["feature"], diag["threshold"]
+    elif strategy == "feature":
+        if feature not in FEATURES:
+            raise ValueError(f"unknown feature {feature!r}; one of {list(FEATURES)}")
+        d = cfg.diagnose
+        natural = build_pool(d.get("natural_pool", 5000), seed=d.get("seed", 0) + 1)   # as in diagnose()
+        threshold = baseline_threshold(design_matrix(natural, FEATURES), list(FEATURES), feature)
+        if not weaknesses.get(feature, {}).get("significant"):
+            warnings.append(f"{feature} is not a significant weakness in the diagnosis; aiming at it anyway")
+    else:
+        feature = None
+    w = weaknesses.get(feature, {}) if feature else {}
+    result = {"strategy": strategy, "feature": feature, "threshold": threshold, "eta": w.get("eta"),
+              "ci_low": w.get("ci_low"), "ci_high": w.get("ci_high"), "significant": w.get("significant"),
+              "warnings": warnings}
+    (cfg.out / "target.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
+
+
+def load_target(cfg: Config) -> dict:
+    """The chosen target: target.json (pipeline) if present, else the auto target in diagnosis.json (CLI),
+    else no target yet (e.g. the baseline step runs before diagnosis)."""
+    path = cfg.out / "target.json"
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    dpath = cfg.out / "diagnosis.json"
+    if not dpath.exists():
+        return {"strategy": None, "feature": None, "threshold": None}
+    diag = json.loads(dpath.read_text(encoding="utf-8"))
+    t = diag.get("target")
+    return {"strategy": "auto", "feature": t["feature"] if t else None, "threshold": diag.get("threshold")}
+
+
+def _all_arm_keys(cfg: Config, has_target: bool) -> list[tuple[str, float]]:
+    ratios = [float(r) for r in cfg.data.get("ratios", [3])]
+    syn = ("targeted", "matched_control", "untargeted") if has_target else ("untargeted",)
+    return [("real_only", 0.0)] + [(arm, r) for arm in syn for r in ratios]
+
+
+def _select_synthetic(cfg: Config, seed: int, lltm: LLTMResult | None, target: str | None,
+                      threshold: float | None, exclude: set[str], arms: set[str]) -> dict:
+    """Synthetic selections for one seed: {arm: [TrainExample]}, plus the match report and a shortfall warning.
+    matched_control needs the targeted selection, so targeted is selected whenever either is requested."""
+    dz = cfg.data
     budget = int(dz.get("token_budget", 600_000))
     ratios = [float(r) for r in dz.get("ratios", [3])]
     p_band = tuple(dz.get("p_band", [0.3, 0.7]))
+    pool = build_pool(dz.get("pool_size", 40_000), seed=100 + seed, grid=cfg.grid(dz), exclude_ids=exclude)
+    natural = build_pool(dz.get("natural_size", 20_000), seed=200 + seed, exclude_ids=exclude)
+    max_syn_tokens = budget * max(ratios) / (1 + max(ratios))
+    mean_len = np.mean([whitespace_tokens(it.question) + whitespace_tokens(it.solution) for it in pool[:500]])
+    need = int(math.ceil(1.3 * max_syn_tokens / mean_len))
+    out: dict[str, Any] = {"syn": {}, "match": None, "warning": None}
+    if {"targeted", "matched_control"} & arms:
+        targeted = select_targeted(pool, lltm, target, threshold, n=need, p_band=p_band, seed=seed)
+        control, match = select_matched_control(pool, lltm, target, threshold, targeted, seed=seed)
+        if len(targeted) < need:
+            out["warning"] = f"seed {seed}: only {len(targeted)}/{need} targeted items; increase data.pool_size"
+        out["syn"]["targeted"] = [to_train(e) for e in from_items(targeted)]
+        out["syn"]["matched_control"] = [to_train(e) for e in from_items(control)]
+        out["match"] = match.to_dict()
+    if "untargeted" in arms:
+        out["syn"]["untargeted"] = [to_train(e) for e in from_items(select_untargeted(natural, need, seed=seed))]
+    return out
+
+
+def _write_arm(cfg: Config, real: list[TrainExample], data: list[TrainExample], arm: str, ratio: float,
+               seed: int) -> tuple[Path, dict]:
+    rows = mix(real, data, ratio, int(cfg.data.get("token_budget", 600_000)), seed=seed)
+    path = _arm_path(cfg, arm, ratio, seed)
+    _write_train(rows, path)
+    return path, _arm_stats(rows)
+
+
+def build_arm(cfg: Config, arm: str, ratio: float, seed: int, target: str | None, threshold: float | None,
+              lltm: LLTMResult | None, real: list[TrainExample] | None = None) -> dict:
+    """Build one arm key's JSONL (PLAN.md S4) and return its stats. Same output as build_data for that key."""
+    if arm in ("targeted", "matched_control") and not target:
+        raise ValueError(f"{arm} needs a target (strategy auto or feature)")
+    diag = json.loads((cfg.out / "diagnosis.json").read_text(encoding="utf-8"))
+    real = real if real is not None else [to_train(e) for e in _real_train(cfg)]
+    if arm == "real_only":
+        return _write_arm(cfg, real, [], arm, 0.0, seed)[1]
+    sel = _select_synthetic(cfg, seed, lltm, target, threshold, set(diag["probe_ids"]), {arm})
+    return _write_arm(cfg, real, sel["syn"][arm], arm, ratio, seed)[1]
+
+
+def build_data(cfg: Config, store: Store, arms: list[tuple[str, float]] | None = None) -> dict:
+    """Stage build_data (PLAN.md S4). arms=None: every arm key of the config (paper mode, unchanged output);
+    otherwise only the given (arm, ratio) keys, for every seed (explore mode). The target comes from
+    target.json (pipeline) or diagnosis.json (CLI)."""
+    dz = cfg.data
+    diag = json.loads((cfg.out / "diagnosis.json").read_text(encoding="utf-8"))
+    tgt = load_target(cfg)
+    target, threshold = tgt["feature"], tgt["threshold"]
+    if not target and tgt.get("strategy") != "untargeted":
+        raise NoSignificantWeakness("diagnosis found no significant weakness; nothing to target")
+    keys = [(a, float(r)) for a, r in arms] if arms is not None else _all_arm_keys(cfg, bool(target))
+    wanted = {a for a, _ in keys}
+    if not target and wanted & {"targeted", "matched_control"}:
+        raise ValueError("targeted / matched_control needs a target (strategy auto or feature)")
+    lltm = LLTMResult.from_dict(diag["lltm"]) if target else None
+    budget = int(dz.get("token_budget", 600_000))
     exclude = set(diag["probe_ids"])
     real = [to_train(e) for e in _real_train(cfg)]
     manifest: dict[str, Any] = {"target": target, "threshold": threshold, "budget_tokens": budget, "arms": {}}
 
     for seed in cfg.seeds:
-        pool = build_pool(dz.get("pool_size", 40_000), seed=100 + seed, grid=cfg.grid(dz), exclude_ids=exclude)
-        natural = build_pool(dz.get("natural_size", 20_000), seed=200 + seed, exclude_ids=exclude)
-        max_syn_tokens = budget * max(ratios) / (1 + max(ratios))
-        mean_len = np.mean([whitespace_tokens(it.question) + whitespace_tokens(it.solution) for it in pool[:500]])
-        need = int(math.ceil(1.3 * max_syn_tokens / mean_len))
-        targeted = select_targeted(pool, lltm, target, threshold, n=need, p_band=p_band, seed=seed)
-        control, match = select_matched_control(pool, lltm, target, threshold, targeted, seed=seed)
-        untargeted = select_untargeted(natural, need, seed=seed)
-        if len(targeted) < need:
-            manifest.setdefault("warnings", []).append(
-                f"seed {seed}: only {len(targeted)}/{need} targeted items; increase data.pool_size")
-        syn = {
-            "targeted": [to_train(e) for e in from_items(targeted)],
-            "matched_control": [to_train(e) for e in from_items(control)],
-            "untargeted": [to_train(e) for e in from_items(untargeted)],
-        }
-        manifest["arms"][f"match_s{seed}"] = match.to_dict()
-        path = _arm_path(cfg, "real_only", 0, seed)
-        rows = mix(real, [], 0, budget, seed=seed)
-        _write_train(rows, path)
-        manifest["arms"][path.stem] = _arm_stats(rows)
-        for arm, data in syn.items():
-            for ratio in ratios:
-                rows = mix(real, data, ratio, budget, seed=seed)
-                path = _arm_path(cfg, arm, ratio, seed)
-                _write_train(rows, path)
-                manifest["arms"][path.stem] = _arm_stats(rows)
+        sel = _select_synthetic(cfg, seed, lltm, target, threshold, exclude, wanted - {"real_only"})
+        if sel["warning"]:
+            manifest.setdefault("warnings", []).append(sel["warning"])
+        if sel["match"] is not None:
+            manifest["arms"][f"match_s{seed}"] = sel["match"]
+        for arm, ratio in keys:
+            data = [] if arm == "real_only" else sel["syn"][arm]
+            path, stats = _write_arm(cfg, real, data, arm, 0.0 if arm == "real_only" else ratio, seed)
+            manifest["arms"][path.stem] = stats
+    (cfg.out / "data").mkdir(parents=True, exist_ok=True)
     (cfg.out / "data" / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    run = store.create_run(f"{cfg.name}:build-data", "build-data", dz)
+    run = _new_run(store, cfg, f"{cfg.name}:build-data", "build-data", dz)
     store.put_artifact(run, "manifest", manifest)
     store.finish_run(run)
     return manifest
@@ -272,16 +382,20 @@ def adapter_dir(cfg: Config, arm: str, ratio: float, seed: int) -> Path:
     return cfg.out / "adapters" / f"{arm}_r{ratio:g}_s{seed}"
 
 
-def train_arm(cfg: Config, store: Store, arm: str, ratio: float, seed: int) -> Path:
+def train_arm(cfg: Config, store: Store, arm: str, ratio: float, seed: int,
+              on_progress: Callable[[int, int, float | None], None] | None = None,
+              should_cancel: Callable[[], bool] | None = None) -> Path:
+    """Stage train (PLAN.md S5). on_progress(step, total_steps, loss|None) is called every logging step;
+    should_cancel() is polled there too, and a True stops training cleanly (errors.Cancelled)."""
     from ..train.qlora import TrainConfig, train
 
     rows = _read_train(_arm_path(cfg, arm, ratio, seed))
     out = adapter_dir(cfg, arm, ratio, seed)
     tcfg = TrainConfig(base_model=cfg.model, output_dir=str(out), seed=seed, prompt_version=cfg.prompt_version, **cfg.train)
-    run = store.create_run(f"{cfg.name}:train:{out.name}", "train",
-                           {"arm": arm, "ratio": ratio, "seed": seed, "n": len(rows)})
+    run = _new_run(store, cfg, f"{cfg.name}:train:{out.name}", "train",
+                   {"arm": arm, "ratio": ratio, "seed": seed, "n": len(rows), "prompt_version": cfg.prompt_version})
     try:
-        path = train(tcfg, rows)
+        path = train(tcfg, rows, on_progress=on_progress, should_cancel=should_cancel)
     except Exception as e:
         store.finish_run(run, status="failed", metrics={"error": repr(e)})
         raise
@@ -300,13 +414,17 @@ def benchmark_options(cfg: Config, name: str) -> dict[str, Any]:
     """limit + loader options for one benchmark, from the config (local JSONL overrides, probe grid)."""
     e = cfg.eval
     if name == "gsm8k":
-        return {"limit": e.get("gsm8k_limit"), "path": cfg.eval_data.get("gsm8k_test")}
-    if name.startswith("gsm_symbolic:"):
+        opts = {"limit": e.get("gsm8k_limit"), "path": cfg.eval_data.get("gsm8k_test")}
+    elif name.startswith("gsm_symbolic:"):
         v = name.split(":", 1)[1]
-        return {"limit": e.get("gsm_symbolic_limit"), "path": cfg.eval_data.get(f"gsm_symbolic_{v}")}
-    if name.startswith("probes_"):
-        return {"grid": cfg.grid(e), "per_cell": e.get("probe_per_cell", 2)}
-    return {}
+        opts = {"limit": e.get("gsm_symbolic_limit"), "path": cfg.eval_data.get(f"gsm_symbolic_{v}")}
+    elif name.startswith("probes_"):
+        opts = {"grid": cfg.grid(e), "per_cell": e.get("probe_per_cell", 2)}
+    else:
+        opts = {}
+    if e.get("benchmark_limit") is not None:      # explore: one limit for every benchmark (PLAN.md §6.1)
+        opts["limit"] = int(e["benchmark_limit"])
+    return opts
 
 
 def eval_sets(cfg: Config) -> dict[str, list[Example]]:
@@ -320,19 +438,25 @@ def eval_sets(cfg: Config) -> dict[str, list[Example]]:
 
 
 def evaluate_model(cfg: Config, store: Store, runner_factory: RunnerFactory, arm: str,
-                   ratio: float | None = None, seed: int | None = None) -> dict:
-    """arm='base' evaluates the untrained model; otherwise the adapter for (arm, ratio, seed)."""
+                   ratio: float | None = None, seed: int | None = None, progress: Progress | None = None) -> dict:
+    """arm='base' evaluates the untrained model; otherwise the adapter for (arm, ratio, seed).
+    Works before diagnosis (the baseline step runs first): the target slice is added only once a target is
+    chosen (target.json, or diagnosis.json for the CLI). progress(done, total) counts problems over all benchmarks."""
     adapter = None if arm == "base" else str(adapter_dir(cfg, arm, ratio, seed) / "adapter")
     tag = "base" if arm == "base" else f"{arm}_r{ratio:g}_s{seed}"
-    run = store.create_run(f"{cfg.name}:eval:{tag}", "eval",
-                           {"arm": arm, "ratio": ratio, "seed": seed, "adapter": adapter,
-                            "prompt_version": cfg.prompt_version})
+    sets = eval_sets(cfg)
+    run = _new_run(store, cfg, f"{cfg.name}:eval:{tag}", "eval",
+                   {"arm": arm, "ratio": ratio, "seed": seed, "adapter": adapter,
+                    "prompt_version": cfg.prompt_version, "benchmarks": list(sets)})
     runner = runner_factory(cfg.model, adapter, cfg.gen())
-    diag = json.loads((cfg.out / "diagnosis.json").read_text(encoding="utf-8"))
+    tgt = load_target(cfg)
     metrics: dict[str, Any] = {"arm": arm, "ratio": ratio, "seed": seed}
     all_recs: list[ResponseRecord] = []
-    for name, exs in eval_sets(cfg).items():
-        recs = evaluate(runner, exs)
+    total, done_before = sum(len(x) for x in sets.values()), 0
+    for name, exs in sets.items():
+        offset = done_before
+        recs = evaluate(runner, exs, progress=(lambda d, t, o=offset: progress(o + d, total)) if progress else None)
+        done_before += len(exs)
         for r in recs:
             r.source = name
         all_recs += recs
@@ -340,14 +464,17 @@ def evaluate_model(cfg: Config, store: Store, runner_factory: RunnerFactory, arm
         metrics[name] = summ["accuracy"]
         if "truncated_share" in summ:
             metrics[f"{name}:truncated_share"] = summ["truncated_share"]
-        if name.startswith("probes") and diag.get("target"):
-            metrics[f"{name}:target_slice"] = slice_accuracy(recs, diag["target"]["feature"], diag["threshold"])
+        if name.startswith("probes") and tgt.get("feature"):
+            metrics[f"{name}:target_slice"] = slice_accuracy(recs, tgt["feature"], tgt["threshold"])
     store.add_responses(run, all_recs)
     probe_recs = [r for r in all_recs if r.source == "probes_train_families"]
-    Q, s, n, _ = item_counts(probe_recs)
-    lltm = fit_lltm(Q, s, n, list(FEATURES))
-    store.put_artifact(run, "lltm", lltm.to_dict())
-    metrics["eta"] = dict(zip(FEATURES, [None if np.isnan(x) else float(x) for x in lltm.eta]))
+    if probe_recs:   # the LLTM refit (eta after training) needs the training-family probe set
+        Q, s, n, _ = item_counts(probe_recs)
+        lltm = fit_lltm(Q, s, n, list(FEATURES))
+        store.put_artifact(run, "lltm", lltm.to_dict())
+        metrics["eta"] = dict(zip(FEATURES, [None if np.isnan(x) else float(x) for x in lltm.eta]))
+    else:
+        metrics["eta"] = None
     store.finish_run(run, metrics=metrics)
     (cfg.out / "evals").mkdir(exist_ok=True)
     (cfg.out / "evals" / f"{tag}.json").write_text(json.dumps({"run_id": run, **metrics}, indent=2), encoding="utf-8")
@@ -366,11 +493,14 @@ def paired_bootstrap(a: np.ndarray, b: np.ndarray, n_boot: int = 10_000, seed: i
             "ci_high": float(np.percentile(boots, 97.5)), "p_value": float(min(1.0, p)), "n": int(len(diff))}
 
 
-def report(cfg: Config, store: Store, ratio: float | None = None) -> dict:
+def report(cfg: Config, store: Store, ratio: float | None = None, include_run_ids: Iterable[str] = ()) -> dict:
     """Aggregate eval runs: per-arm means over seeds, and paired item-level comparisons,
-    where each item's correctness is first averaged over seeds within an arm."""
+    where each item's correctness is first averaged over seeds within an arm.
+    include_run_ids: extra eval runs to use (a baseline reused from another job has that job's name)."""
     ratio = float(ratio if ratio is not None else cfg.data.get("main_ratio", 3))
-    evals = [r for r in store.list_runs("eval") if r["name"].startswith(f"{cfg.name}:") and r["status"] == "done"]
+    extra = set(include_run_ids)
+    evals = [r for r in store.list_runs("eval")
+             if (r["name"].startswith(f"{cfg.name}:") or r["id"] in extra) and r["status"] == "done"]
     per_arm_item: dict[str, dict[str, dict[str, list[float]]]] = {}
     table: dict[str, dict[str, list[float]]] = {}
     for r in evals:

@@ -123,6 +123,7 @@ class Store:
     def __init__(self, path: str | Path = "runs/dreammachine.db") -> None:
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.path = str(path) if str(path) == ":memory:" else str(Path(path).resolve())
         self._conn = sqlite3.connect(str(path), check_same_thread=False, timeout=5.0)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()

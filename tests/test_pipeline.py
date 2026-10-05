@@ -156,6 +156,19 @@ def test_dev_holdout_is_disjoint_from_training(tmp_path):
     assert dev == {"r7", "r8", "r9"} and len(train) == 7 and not dev & train
 
 
+def test_evaluate_without_probe_sets(tmp_path):
+    """Found by the B4 GPU check: a benchmark list without probes_train_families must not crash the LLTM refit."""
+    from dreammachine.models.runner import EchoRunner
+
+    exs = from_items(generate_many(GenSpec(steps=2, digits=1), 5, seed=3))
+    save_jsonl([Example(id=f"g{i}", source="gsm8k", question=e.question, answer=e.answer, solution=e.solution)
+                for i, e in enumerate(exs)], tmp_path / "g.jsonl")
+    cfg = P.Config(name="t", output_dir=str(tmp_path / "out"), eval_data={"gsm8k_test": str(tmp_path / "g.jsonl")},
+                   eval={"benchmarks": ["gsm8k"]})
+    m = P.evaluate_model(cfg, Store(":memory:"), lambda model, adapter, gen: EchoRunner(), "base")
+    assert m["gsm8k"] == 0.0 and m["eta"] is None
+
+
 def test_config_loads_yaml():
     for path in ("configs/main.yaml", "configs/smoke.yaml"):
         cfg = P.Config.load(path)

@@ -26,6 +26,19 @@ Linux (bash) is the same with `python3 -m venv .venv && source .venv/bin/activat
 
 **Letting Claude drive the GPU directly:** open this folder in Claude Code on the laptop; that session can use the GPU.
 
+## 1a. One pipeline, one command (B4)
+Every stage from the baseline benchmark to the comparison, in the foreground (the worker for queued jobs comes in B5).
+Each job gets its own folder `runs/pipelines/<job id>/`. **Explore runs are never paper evidence.**
+```powershell
+python -m dreammachine.jobs run --preset explore --model Qwen/Qwen3-0.6B --limit 50
+python -m dreammachine.jobs run --kind benchmark_run --model Qwen/Qwen3-1.7B --limit 300          # baseline + diagnosis only
+python -m dreammachine.jobs run --preset explore --model Qwen/Qwen3-1.7B --target feature:n_carry --reuse-from <job id>
+python -m dreammachine.jobs run --preset paper --model Qwen/Qwen3-0.6B                             # the full protocol (days)
+```
+`--reuse-from` skips the baseline (and the diagnosis, if its settings match) of an earlier explore pipeline or benchmark
+run. Resuming a failed or cancelled job (finished steps kept) comes with the worker in B5. Explore defaults:
+`configs/explore.yaml` (starting guesses until B8 measures them).
+
 ## 1. Smoke run (proves your setup works end to end)
 ```powershell
 python -m dreammachine.experiments.run screen     --config configs/smoke.yaml

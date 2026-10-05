@@ -92,6 +92,57 @@ def test_4bit_without_cuda_gives_clear_error(monkeypatch):
         check_4bit_support("train.load_in_4bit")
 
 
+def _tiny_train_cfg(tiny_model_dir, out, **kw):
+    return TrainConfig(base_model=str(tiny_model_dir), output_dir=str(out), load_in_4bit=False, max_steps=4,
+                       per_device_batch_size=4, grad_accum=1, save_steps=2, logging_steps=1,
+                       target_modules=["q_proj", "v_proj"], **kw)
+
+
+def _tiny_examples(n=16):
+    return [TrainExample(it.question, clean_solution(it.solution), "syn", it.id)
+            for it in generate_many(GenSpec(steps=2, digits=1), n, seed=0)]
+
+
+def test_train_reports_progress_and_cleans_checkpoints(tiny_model_dir, tmp_path):
+    import json
+
+    calls = []
+    adapter = train(_tiny_train_cfg(tiny_model_dir, tmp_path / "run"), _tiny_examples(),
+                    on_progress=lambda step, total, loss: calls.append((step, total, loss)))
+    assert calls[0] == (0, 4, None) and [c[0] for c in calls[1:]] == [1, 2, 3, 4]
+    assert all(isinstance(c[2], float) for c in calls[1:])
+    m = json.loads((tmp_path / "run" / "train_manifest.json").read_text(encoding="utf-8"))
+    assert [p["step"] for p in m["loss_curve"]] == [1, 2, 3, 4] and m["load_seconds"] > 0
+    assert (adapter / "adapter_config.json").exists() and not list((tmp_path / "run").glob("checkpoint-*"))
+
+
+def test_cancel_stops_at_step_boundary_then_resumes(tiny_model_dir, tmp_path):
+    import json
+
+    from dreammachine.errors import Cancelled
+
+    out = tmp_path / "run"
+    with pytest.raises(Cancelled, match="step 1"):
+        train(_tiny_train_cfg(tiny_model_dir, out), _tiny_examples(), should_cancel=lambda: True)
+    assert not (out / "adapter").exists()
+    cks = sorted(p.name for p in out.glob("checkpoint-*"))
+    assert cks == ["checkpoint-1"] and (out / "checkpoint-1" / "trainer_state.json").exists()
+    train(_tiny_train_cfg(tiny_model_dir, out), _tiny_examples())
+    m = json.loads((out / "train_manifest.json").read_text(encoding="utf-8"))
+    assert m["resumed_from"] == "checkpoint-1" and (out / "adapter" / "adapter_config.json").exists()
+
+
+def test_incomplete_checkpoint_is_ignored(tmp_path):
+    from dreammachine.train.qlora import complete_checkpoints
+
+    for name, done in (("checkpoint-2", True), ("checkpoint-10", True), ("checkpoint-12", False)):
+        (tmp_path / name).mkdir()
+        if done:
+            (tmp_path / name / "trainer_state.json").write_text("{}", encoding="utf-8")
+    assert [p.name for p in complete_checkpoints(tmp_path)] == ["checkpoint-2", "checkpoint-10"]
+    assert not (tmp_path / "checkpoint-12").exists()      # cut off mid-write: deleted, never resumed from
+
+
 @pytest.mark.slow
 def test_overfit_one_example_end_to_end(tiny_model_dir, tmp_path):
     """Train on one problem until memorised, then evaluate it through the real

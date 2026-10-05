@@ -65,5 +65,12 @@ eval:
   probe_per_cell: 2
   load_in_4bit: false     # 1-2B models fit in bf16
 
+preflight:
+  min_free_gb: 10         # starting guess (PLAN.md S0); adjust after B8 measures run sizes
+
+gpu:
+  required: true
+  memory_fraction: 0.92   # VRAM cap per step so Windows cannot spill into system RAM (RUNNING.md §8)
+
 seeds: [0, 1, 2]
 real_data: gsm8k

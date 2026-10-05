@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -41,6 +42,7 @@ class TrainConfig:
     logging_steps: int = 10
     save_steps: int = 200
     save_total_limit: int = 2
+    keep_checkpoints: bool = False   # delete checkpoint-* after the final adapter is saved
     extra: dict = field(default_factory=dict)
 
 
@@ -103,11 +105,64 @@ def _load_model(cfg: TrainConfig):
     return get_peft_model(model, lora)
 
 
-def train(cfg: TrainConfig, examples: list[TrainExample]) -> Path:
-    """Fine-tune and return the adapter directory (output_dir/adapter)."""
+def complete_checkpoints(out: Path) -> list[Path]:
+    """checkpoint-* folders that finished writing (they contain trainer_state.json), oldest first.
+    Incomplete ones (cut off mid-write by a crash or a hard kill) are deleted: resuming from them would fail."""
+    done = []
+    for ck in out.glob("checkpoint-*"):
+        if not ck.is_dir():
+            continue
+        if (ck / "trainer_state.json").exists():
+            done.append(ck)
+        else:
+            shutil.rmtree(ck, ignore_errors=True)
+
+    def step(p: Path) -> int:
+        try:
+            return int(p.name.split("-", 1)[1])
+        except ValueError:
+            return -1
+    return sorted(done, key=step)
+
+
+def _job_callback(total_steps: int, on_progress, should_cancel, logging_steps: int):
+    """TrainerCallback: report (step, total, loss) and stop cleanly at a step boundary on cancel (PLAN.md S5, 7.3)."""
+    from transformers import TrainerCallback
+
+    class _JobCallback(TrainerCallback):
+        cancelled = False
+
+        def on_train_begin(self, args, state, control, **kw):
+            if on_progress:
+                on_progress(state.global_step, state.max_steps or total_steps, None)
+
+        def on_log(self, args, state, control, logs=None, **kw):
+            if on_progress and logs and "loss" in logs:
+                on_progress(state.global_step, state.max_steps or total_steps, float(logs["loss"]))
+
+        def on_step_end(self, args, state, control, **kw):
+            if should_cancel and state.global_step % max(1, logging_steps) == 0 and should_cancel():
+                self.cancelled = True
+                control.should_save = True            # keep a complete checkpoint so the job can resume
+                control.should_training_stop = True
+            return control
+
+    return _JobCallback()
+
+
+def train(cfg: TrainConfig, examples: list[TrainExample], on_progress=None, should_cancel=None) -> Path:
+    """Fine-tune and return the adapter directory (output_dir/adapter).
+
+    on_progress(step, total_steps, loss|None) is called at the start and at every logging step;
+    should_cancel() is polled every `logging_steps`: if True, a checkpoint is saved, training stops at that step
+    boundary and errors.Cancelled is raised (no adapter is written; a later run resumes from the checkpoint).
+    """
     import torch
     from transformers import AutoTokenizer, Trainer, TrainingArguments, set_seed
 
+    from ..errors import Cancelled
+
+    t_start = time.time()
     set_seed(cfg.seed)
     out = Path(cfg.output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -158,11 +213,16 @@ def train(cfg: TrainConfig, examples: list[TrainExample]) -> Path:
         dataloader_pin_memory=cuda,
         **extra,
     )
+    callback = _job_callback(total_steps, on_progress, should_cancel, cfg.logging_steps)
     trainer = Trainer(model=model, args=args, train_dataset=data,
-                      data_collator=_Collator(tokenizer.pad_token_id))
-    resume = any(out.glob("checkpoint-*"))
+                      data_collator=_Collator(tokenizer.pad_token_id), callbacks=[callback])
+    checkpoints = complete_checkpoints(out)
+    resume = str(checkpoints[-1]) if checkpoints else None
+    load_seconds = time.time() - t_start
     t0 = time.time()
-    result = trainer.train(resume_from_checkpoint=True if resume else None)
+    result = trainer.train(resume_from_checkpoint=resume)
+    if callback.cancelled:
+        raise Cancelled(f"training stopped at step {trainer.state.global_step} (checkpoint kept for resume)")
     adapter_dir = out / "adapter"
     model.save_pretrained(adapter_dir)
     tokenizer.save_pretrained(adapter_dir)
@@ -172,8 +232,14 @@ def train(cfg: TrainConfig, examples: list[TrainExample]) -> Path:
         "n_skipped_too_long": skipped,
         "n_label_tokens": int(sum(sum(1 for l in d["labels"] if l != -100) for d in data)),
         "train_metrics": result.metrics,
-        "resumed": resume,
+        "resumed": resume is not None,
+        "resumed_from": Path(resume).name if resume else None,
+        "load_seconds": load_seconds,
         "wall_seconds": time.time() - t0,
+        "loss_curve": [{"step": h["step"], "loss": h["loss"]} for h in trainer.state.log_history if "loss" in h],
     }
     (out / "train_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    if not cfg.keep_checkpoints:     # only needed to resume an unfinished run (PLAN.md S5 cleanup)
+        for ck in out.glob("checkpoint-*"):
+            shutil.rmtree(ck, ignore_errors=True)
     return adapter_dir
