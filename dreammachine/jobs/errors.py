@@ -3,7 +3,7 @@ step errors are stored on the step as {code, message, details} and copied to the
 
 from __future__ import annotations
 
-from ..errors import Cancelled, NoSignificantWeakness
+from ..errors import Cancelled, InsufficientData, NoSignificantWeakness
 
 REQUEST_CODES = ("validation_error", "paper_mode_locked", "reuse_mismatch", "invalid_feature", "unknown_model",
                  "unknown_benchmark", "not_found", "conflict", "not_ready", "paper_protected")
@@ -41,6 +41,8 @@ def error_from_exception(e: BaseException, step_key: str = "") -> dict:
         return {"code": "cancelled", "message": str(e) or "cancelled by the user", "details": None}
     if isinstance(e, NoSignificantWeakness):
         return {"code": "no_significant_weakness", "message": str(e), "details": None}
+    if isinstance(e, InsufficientData):   # no dedicated contract code: internal_error with an actionable message
+        return {"code": "internal_error", "message": str(e), "details": {"step_key": step_key}}
     name, text = type(e).__name__, str(e)
     if name == "OutOfMemoryError" or "out of memory" in text.lower():
         return {"code": "out_of_memory", "message": OOM_HINT, "details": {"step_key": step_key}}

@@ -25,6 +25,7 @@ class Benchmark:
     loader: Loader
     size: int | None = None              # full size if known (shown by the API); None = depends on config
     options: dict[str, Any] = field(default_factory=dict)   # default loader options
+    version: int = 1                     # bump when the loader picks different problems; part of the baseline hash
 
     def load(self, limit: int | None = None, seed: int = 0, **options: Any) -> list[Example]:
         """Up to `limit` examples (None = all). `options` override the defaults (e.g. a local file path)."""

@@ -291,6 +291,25 @@ def _all_arm_keys(cfg: Config, has_target: bool) -> list[tuple[str, float]]:
     return [("real_only", 0.0)] + [(arm, r) for arm in syn for r in ratios]
 
 
+def _tokens(it) -> int:
+    return whitespace_tokens(it.question) + whitespace_tokens(it.solution)
+
+
+def synthetic_need(pool: list, max_syn_tokens: float, target: str | None, threshold: float | None) -> int:
+    """How many synthetic items to select per arm so every arm can fill its token budget (30% margin).
+    The matched control takes one item per targeted item, but its items sit at or below the target threshold and
+    can be much shorter (target `steps`: ~70 vs ~118 tokens, measured in B8). So size the selection by the shorter
+    side's mean length, not the pool's; otherwise the control arm cannot reach the equal token budget."""
+    sample = pool[:2000]
+    lengths = [np.mean([_tokens(it) for it in sample])]
+    if target:
+        for side in ([it for it in sample if it.features[target] > threshold],
+                     [it for it in sample if it.features[target] <= threshold]):
+            if side:
+                lengths.append(np.mean([_tokens(it) for it in side]))
+    return int(math.ceil(1.3 * max_syn_tokens / min(lengths)))
+
+
 def _select_synthetic(cfg: Config, seed: int, lltm: LLTMResult | None, target: str | None,
                       threshold: float | None, exclude: set[str], arms: set[str]) -> dict:
     """Synthetic selections for one seed: {arm: [TrainExample]}, plus the match report and a shortfall warning.
@@ -299,17 +318,25 @@ def _select_synthetic(cfg: Config, seed: int, lltm: LLTMResult | None, target: s
     budget = int(dz.get("token_budget", 600_000))
     ratios = [float(r) for r in dz.get("ratios", [3])]
     p_band = tuple(dz.get("p_band", [0.3, 0.7]))
-    pool = build_pool(dz.get("pool_size", 40_000), seed=100 + seed, grid=cfg.grid(dz), exclude_ids=exclude)
+    pool_size = int(dz.get("pool_size", 40_000))
+    pool = build_pool(pool_size, seed=100 + seed, grid=cfg.grid(dz), exclude_ids=exclude)
     natural = build_pool(dz.get("natural_size", 20_000), seed=200 + seed, exclude_ids=exclude)
     max_syn_tokens = budget * max(ratios) / (1 + max(ratios))
-    mean_len = np.mean([whitespace_tokens(it.question) + whitespace_tokens(it.solution) for it in pool[:500]])
-    need = int(math.ceil(1.3 * max_syn_tokens / mean_len))
+    need = synthetic_need(pool, max_syn_tokens, target, threshold)
     out: dict[str, Any] = {"syn": {}, "match": None, "warning": None, "features": {}}
     if {"targeted", "matched_control"} & arms:
         targeted = select_targeted(pool, lltm, target, threshold, n=need, p_band=p_band, seed=seed)
+        # Too few candidates in the difficulty band: generate more (deterministically) before giving up.
+        pool_max, extra = int(dz.get("pool_max", 4 * pool_size)), 1
+        while len(targeted) < need and len(pool) < pool_max:
+            more = build_pool(min(pool_size, pool_max - len(pool)), seed=100 + seed + 1000 * extra,
+                              grid=cfg.grid(dz), exclude_ids=exclude | {it.id for it in pool})
+            pool, extra = pool + more, extra + 1
+            targeted = select_targeted(pool, lltm, target, threshold, n=need, p_band=p_band, seed=seed)
         control, match = select_matched_control(pool, lltm, target, threshold, targeted, seed=seed)
         if len(targeted) < need:
-            out["warning"] = f"seed {seed}: only {len(targeted)}/{need} targeted items; increase data.pool_size"
+            out["warning"] = (f"seed {seed}: only {len(targeted)}/{need} targeted items from a pool of {len(pool)}; "
+                              "increase data.pool_size or data.pool_max")
         out["syn"]["targeted"] = [to_train(e) for e in from_items(targeted)]
         out["syn"]["matched_control"] = [to_train(e) for e in from_items(control)]
         out["match"] = match.to_dict()

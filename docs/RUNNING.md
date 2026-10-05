@@ -219,3 +219,76 @@ overflow into shared system RAM and the run becomes many times slower (seen: thi
 fails with a clear OOM instead. Proposed for B4/B5: the same cap in step subprocesses, so a pipeline step fails fast
 rather than crawling. (Alternative: NVIDIA Control Panel → "CUDA - Sysmem Fallback Policy" → "Prefer No Sysmem
 Fallback"; a system setting for the user.)
+
+## 9. B8: first real end-to-end pipeline — GPU-verified, EXPLORE (not paper evidence), 2026-10-05
+Started through the API (`POST /api/v1/pipelines`), run by the worker, read back through the API.
+Qwen3-0.6B, project prompt `qwen_boxed`, `benchmark_limit` 50, arms targeted + matched_control at ratio 3, seed 0,
+explore preset (`configs/explore.yaml`). Job `5a584e16390b`.
+
+| Step | Time | Notes |
+|---|---|---|
+| preflight | 10 s | |
+| baseline | 10 min | 4 benchmarks x 50; 15 s of it model loading |
+| diagnose | 60 min | 432 probes x 3 samples; max 73 °C |
+| choose_target | <1 s | auto -> `steps` (threshold 4.0) |
+| build_data | 30 s | failed once, fixed, resumed (below) |
+| train matched_control / targeted | 34 / 29 min | 314 / 262 steps, ~6.6 s/step |
+| evaluate matched_control / targeted | 10 / 15 min | |
+| **whole pipeline** | **~2.6 h** + 4 min lost to the build_data failure | output folder 107 MB |
+
+Diagnosis (432 items x 3): significant weaknesses `steps` (η +0.53), `n_div` (+1.29), `n_mul` (+0.39); not
+significant: `log10_max`, `n_distractors`, `n_carry`. McFadden R² 0.26.
+
+Results (50 problems per benchmark, ONE seed — far too small to conclude anything):
+
+| | GSM8K | probes train families | probes held-out families | η change `steps` |
+|---|---|---|---|---|
+| untrained | 0.62 | 0.38 | 0.32 | — |
+| matched_control | 0.30 (regression) | 0.76 | 0.68 | −0.28 |
+| targeted | 0.36 (regression) | 0.66 | 0.60 | −1.19 |
+| targeted − matched (primary) | +0.06 [−0.06, +0.18] | −0.10 [−0.24, +0.04] | −0.08 [−0.22, +0.06] | |
+
+**Found by this run and fixed (B8):**
+1. **Matched control could not fill the equal token budget.** It takes one item per targeted item, but with target
+   `steps` its items are much shorter (70 vs 118 whitespace tokens), so it had 127,945 of 150,000 synthetic tokens.
+   Fix: the number of items to select is sized by the shorter side's mean length (`synthetic_need`), and the
+   candidate pool grows deterministically up to `data.pool_max` (default 4x `pool_size`) when the difficulty band is
+   short; a still-impossible budget fails with an actionable message. Matching itself (1:1, nearest predicted logit)
+   is unchanged. After the fix both arms reached 199.9k of 200k tokens; 2,772 of 2,772 targeted items were matched
+   (mean |Δlogit| 0.01, KS 0.042, p = 0.014 — very close, but with this many items even a small difference is
+   detectable: relevant to open question 2, match-quality thresholds).
+2. **GSM-Symbolic limits covered only a few templates.** The dataset groups its rows by template (~50 instances
+   each), so the first 50 rows were 50 copies of ONE problem (gold answer always 20) and `main.yaml`'s first 500 were
+   10 of 100 templates. Fix: a limit now takes instances round-robin across templates (50 -> 50 templates; 500 -> all
+   100 x 5); the benchmark version is now 2 and is part of the baseline hash, so old baselines are not reused.
+   **The GSM-Symbolic numbers of this run are invalid** (and the targeted arm was evaluated after the fix, so its
+   GSM-Symbolic set differs from the baseline's).
+
+**For the team (not fixed — a research decision):** both trained arms got significantly WORSE on GSM8K (−0.26 and
+−0.32, whole CI below 0), as in the B1 smoke run. After training, the model writes short GSM8K-style solutions
+(the training completions' style) and makes more plan errors. Options to test on the dev set before a paper run:
+lower learning rate (2e-4 now) or 1 epoch; more real data (lower ratio); keeping the model's own solution style
+(self-distillation — LLM-written data, needs the team's explicit OK). The arm-vs-arm comparison is still valid
+(all arms share the setup), but a regression on GSM8K weakens the paper's story.
+
+### Prompt comparison (PLAN.md §8.5) — GPU-verified, B8
+Same 200 problems (the GSM8K-**train** dev slice, items 7273-7472; GSM8K test stays untouched), 700 new tokens, greedy,
+bf16, the same settings for every prompt (batch 32 for 0.6B, 16 for 1.7B). Shares are of all 200 answers.
+`python -m dreammachine.benchmarks run ... --benchmark jsonl:runs/b8/dev200.jsonl --prompt-version <v> --max-new-tokens 700`
+
+| Model | Prompt | Accuracy | FORMAT_ERROR | UNVERIFIABLE | format_ok | Cut off |
+|---|---|---|---|---|---|---|
+| Qwen3-0.6B | dm_v1 | 0.565 | 0.5 % | 13.5 % | 1.5 % | 0 % |
+| Qwen3-0.6B | v2_700 | 0.360 | 0.5 % | 42.0 % | 2.5 % | 0 % |
+| Qwen3-0.6B | **qwen_boxed** | **0.705** | 0.0 % | 11.0 % | 0.0 % | 0 % |
+| Qwen3-1.7B | dm_v1 | 0.790 | 1.0 % | 3.5 % | 20.5 % | 0 % |
+| Qwen3-1.7B | v2_700 | 0.775 | 1.0 % | 4.0 % | 11.5 % | 0 % |
+| Qwen3-1.7B | **qwen_boxed** | **0.860** | 0.5 % | 2.5 % | 0.0 % | 0.5 % |
+
+Paired (same problems): qwen_boxed − dm_v1 = +0.140 [+0.075, +0.205] (0.6B), +0.070 [+0.015, +0.125] (1.7B);
+qwen_boxed − v2_700 = +0.345 [+0.265, +0.425] (0.6B), +0.085 [+0.035, +0.140] (1.7B).
+Reading: the project prompt (D10) is best on both models and has the fewest UNVERIFIABLE errors, so the error
+classifier keeps finding equations to check. v2_700 asks for no written work: on 0.6B, 42 % of answers become
+UNVERIFIABLE and accuracy falls to 0.36. `format_ok` (a bare final number) stays low for every prompt; with
+qwen_boxed it is 0 by design (the answer is in `\boxed{}`, which `extract_answer` reads). 700 tokens cut off at most
+0.5 % of answers, and 0.6B accuracies equal the 512-token dev runs exactly (§7), so 512 tokens stays the setting.

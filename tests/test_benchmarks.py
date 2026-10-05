@@ -130,3 +130,21 @@ def test_model_catalog(tmp_path):
     dup.write_text("models:\n  - {id: a, display_name: A}\n  - {id: a, display_name: A2}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="twice"):
         load_models(dup)
+
+
+def test_gsm_symbolic_limit_spreads_across_templates(tmp_path):
+    # B8: the dataset groups rows by template, so "the first 50" was 50 copies of one problem
+    from dreammachine.benchmarks.builtin import spread_templates
+    from dreammachine.data.loaders import _from_gsm_rows
+
+    rows = [{"id": t, "instance": k, "original_id": 100 + t, "question": f"q{t}-{k}", "answer": f"#### {t}"}
+            for t in range(4) for k in range(5)]
+    exs = _from_gsm_rows(rows, "gsm_symbolic:main", "gsmsym-main")
+    save_jsonl(exs, tmp_path / "sym.jsonl")
+    got = B.get("gsm_symbolic:main").load(limit=6, path=str(tmp_path / "sym.jsonl"))
+    assert [e.id for e in got] == ["gsmsym-main-0-0", "gsmsym-main-1-0", "gsmsym-main-2-0", "gsmsym-main-3-0",
+                                   "gsmsym-main-0-1", "gsmsym-main-1-1"]
+    assert len(spread_templates(exs)) == 20 and sorted(e.id for e in spread_templates(exs)) == sorted(e.id for e in exs)
+    gsm = [Example(id=f"g{i}", source="gsm8k", question="q", answer="1") for i in range(3)]
+    assert spread_templates(gsm) == gsm                       # no template metadata: order unchanged
+    assert B.get("gsm_symbolic:main").version == 2 and B.get("gsm8k").version == 1

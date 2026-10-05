@@ -28,10 +28,23 @@ def _gsm8k(limit: int | None = None, seed: int = 0, path: str | None = None) -> 
     return exs[:limit]
 
 
+def spread_templates(exs: list[Example]) -> list[Example]:
+    """GSM-Symbolic lists its rows grouped by template (all ~50 instances of template 0, then template 1, ...), so the
+    first N rows cover only N/50 templates (B8: the first 50 were one problem, gold answer always 20). Reorder
+    round-robin: instance 0 of every template, then instance 1 of every template, ... so any limit covers as many
+    templates as possible. Deterministic; rows without template metadata keep their order."""
+    if not exs or not all("original_id" in e.meta and "instance" in e.meta for e in exs):
+        return exs
+    order = {}
+    for e in exs:
+        order.setdefault(e.meta["original_id"], len(order))       # templates in their original order
+    return sorted(exs, key=lambda e: (int(e.meta["instance"]), order[e.meta["original_id"]]))
+
+
 def _gsm_symbolic(variant: str):
     def loader(limit: int | None = None, seed: int = 0, path: str | None = None) -> list[Example]:
-        exs = load_jsonl(path) if path else load_gsm_symbolic(variant, limit=limit)
-        return exs[:limit]
+        exs = load_jsonl(path) if path else load_gsm_symbolic(variant)   # all rows, then spread across templates
+        return spread_templates(exs)[:limit]
     return loader
 
 
@@ -51,11 +64,11 @@ BUILTINS = [
     Benchmark("gsm8k", f"GSM8K test set ({GSM8K_TEST_SIZE} grade-school word problems).", "external", _gsm8k,
               size=GSM8K_TEST_SIZE),
     Benchmark("gsm_symbolic:main", "GSM-Symbolic: GSM8K templates with new names and numbers.", "external",
-              _gsm_symbolic("main"), size=GSM_SYMBOLIC_SIZES["main"]),
+              _gsm_symbolic("main"), size=GSM_SYMBOLIC_SIZES["main"], version=2),
     Benchmark("gsm_symbolic:p1", "GSM-Symbolic P1: one extra clause per problem.", "external",
-              _gsm_symbolic("p1"), size=GSM_SYMBOLIC_SIZES["p1"]),
+              _gsm_symbolic("p1"), size=GSM_SYMBOLIC_SIZES["p1"], version=2),
     Benchmark("gsm_symbolic:p2", "GSM-Symbolic P2: two extra clauses per problem.", "external",
-              _gsm_symbolic("p2"), size=GSM_SYMBOLIC_SIZES["p2"]),
+              _gsm_symbolic("p2"), size=GSM_SYMBOLIC_SIZES["p2"], version=2),
     Benchmark("probes_train_families", "Generated probe problems in the story styles used for training.",
               "synthetic", _probes("train")),
     Benchmark("probes_heldout_families", "Generated probe problems in story styles never used for training.",

@@ -211,10 +211,14 @@ def _gen_settings(cfg: Config) -> dict:
 
 def baseline_hash(cfg: Config, benchmarks: list[str], limit: int | None, revision: str | None) -> str:
     """Same hash = the base model's benchmark results can be reused (PLAN.md §6.3)."""
+    from ..benchmarks import registry
+
     opts = {b: {k: (asdict(v) if hasattr(v, "__dataclass_fields__") else v)
                 for k, v in benchmark_options(cfg, b).items()} for b in benchmarks}
+    versions = {b: registry.get(b).version for b in benchmarks}   # a loader change invalidates old baselines
     return _h({"model": cfg.model, "revision": revision, "benchmarks": benchmarks, "benchmark_limit": limit,
-               "benchmark_options": opts, "prompt_version": cfg.prompt_version, "generation": _gen_settings(cfg),
+               "benchmark_options": opts, "benchmark_versions": versions, "prompt_version": cfg.prompt_version,
+               "generation": _gen_settings(cfg),
                "eval_load_in_4bit": bool(cfg.eval.get("load_in_4bit", False)),
                "eval_data": cfg.eval_data})
 

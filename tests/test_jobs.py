@@ -147,6 +147,15 @@ def test_hashes():
     assert a["config_hash"] != b["config_hash"]
     assert c["baseline_hash"] != a["baseline_hash"] and c["diagnosis_hash"] == a["diagnosis_hash"]
 
+    # a loader version bump (e.g. GSM-Symbolic v2, B8) means old baselines are not reused
+    from dreammachine.benchmarks import registry
+    b = registry.get("gsm_symbolic:main")
+    old_version, b.version = b.version, 99
+    try:
+        assert mk(arms=["targeted"])["baseline_hash"] != a["baseline_hash"]
+    finally:
+        b.version = old_version
+
 
 # ----------------------------------------------------------------- end to end
 def test_explore_pipeline_end_to_end_and_reuse(env):

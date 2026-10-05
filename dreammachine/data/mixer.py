@@ -83,7 +83,11 @@ def mix(real: Sequence[TrainExample], synthetic: Sequence[TrainExample], ratio: 
     s = take_by_token_budget(syn_s, syn_budget, count) if syn_budget else []
     for name, got, want, pool in (("real", r, real_budget, real_s), ("synthetic", s, syn_budget, syn_s)):
         if want and total_tokens(got, count) < 0.95 * want and len(got) == len(pool):
-            raise ValueError(f"not enough {name} data: {total_tokens(got, count)} < {want} tokens")
+            from ..errors import InsufficientData
+
+            hint = ("raise data.pool_size or data.pool_max, or lower data.token_budget" if name == "synthetic"
+                    else "lower data.token_budget or add real training data")
+            raise InsufficientData(f"not enough {name} data: {total_tokens(got, count)} < {want} tokens; {hint}")
     out = r + s
     rng.shuffle(out)
     return out

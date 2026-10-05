@@ -22,7 +22,9 @@ PLANTED = dict(steps=0.3, log10_max=0.2, n_mul=0.1, n_div=0.1, n_carry=0.6, n_di
 
 
 def _legacy_build_data(cfg, store):
-    """build_data exactly as it was before B4 (commit ded1727)."""
+    """build_data as it was before the B4 split (commit ded1727), with one deliberate later change: the number of
+    items to select comes from P.synthetic_need (B8). Pool growth (data.pool_max) is not copied: the test config is
+    sized so the first pool is enough, and test_pool_grows_when_band_is_short covers growth."""
     dz = cfg.data
     diag = json.loads((cfg.out / "diagnosis.json").read_text(encoding="utf-8"))
     if not diag["target"]:
@@ -39,8 +41,8 @@ def _legacy_build_data(cfg, store):
         pool = build_pool(dz.get("pool_size", 40_000), seed=100 + seed, grid=cfg.grid(dz), exclude_ids=exclude)
         natural = build_pool(dz.get("natural_size", 20_000), seed=200 + seed, exclude_ids=exclude)
         max_syn_tokens = budget * max(ratios) / (1 + max(ratios))
-        mean_len = np.mean([whitespace_tokens(it.question) + whitespace_tokens(it.solution) for it in pool[:500]])
-        need = int(math.ceil(1.3 * max_syn_tokens / mean_len))
+        # B8 (deliberate change, not part of the refactor): size the selection by the shorter side's mean length.
+        need = P.synthetic_need(pool, max_syn_tokens, target, threshold)
         targeted = select_targeted(pool, lltm, target, threshold, n=need, p_band=p_band, seed=seed)
         control, match = select_matched_control(pool, lltm, target, threshold, targeted, seed=seed)
         untargeted = select_untargeted(natural, need, seed=seed)
@@ -144,3 +146,43 @@ def test_explore_subset_and_untargeted(two_cfgs, tmp_path):
     assert mu["target"] is None and "match_s0" not in mu["arms"] and "untargeted_r3_s0" in mu["arms"]
     with pytest.raises(ValueError, match="needs a target"):
         P.build_data(u, Store(":memory:"), arms=[("matched_control", 3.0)])
+
+
+def _steps_cfg(tmp_path, name, pool_size, **data):
+    cfg = _cfg(tmp_path, name)
+    cfg.seeds = [0]
+    cfg.data = {"pool_size": pool_size, "natural_size": 1200, "token_budget": 6000, "ratios": [3], "main_ratio": 3,
+                "grid": {"steps": [2, 3, 4, 5, 6], "digits": [1, 2, 3]}, **data}
+    diag = _diagnosis(cfg)
+    natural = build_pool(800, seed=1)
+    diag["target"] = {"feature": "steps", "eta": 0.5, "ci_low": 0.3, "ci_high": 0.7, "range": 3.0, "effect": 1.5,
+                      "significant": True}
+    diag["threshold"] = baseline_threshold(design_matrix(natural, FEATURES), list(FEATURES), "steps")
+    (cfg.out / "diagnosis.json").write_text(json.dumps(diag), encoding="utf-8")
+    return cfg
+
+
+def test_every_arm_fills_the_budget_when_control_items_are_shorter(tmp_path):
+    # B8: target `steps` -> control items (few steps) are much shorter than targeted ones
+    cfg = _steps_cfg(tmp_path, "steps", pool_size=4000)
+    m = P.build_data(cfg, Store(":memory:"), arms=[("targeted", 3.0), ("matched_control", 3.0)])
+    for key in ("targeted_r3_s0", "matched_control_r3_s0"):
+        assert m["arms"][key]["tokens"] > 0.95 * 6000, (key, m["arms"][key])
+    assert "warnings" not in m
+
+
+def test_pool_grows_when_band_is_short(tmp_path):
+    cfg = _steps_cfg(tmp_path, "grow", pool_size=300)             # far too small on its own
+    m = P.build_data(cfg, Store(":memory:"), arms=[("targeted", 3.0), ("matched_control", 3.0)])
+    assert m["arms"]["matched_control_r3_s0"]["tokens"] > 0.95 * 6000 and "warnings" not in m
+
+
+def test_impossible_budget_fails_with_a_clear_message(tmp_path):
+    from dreammachine.errors import InsufficientData
+    from dreammachine.jobs.errors import error_from_exception
+
+    cfg = _steps_cfg(tmp_path, "tiny", pool_size=100, pool_max=100)
+    with pytest.raises(InsufficientData, match="pool_size") as e:
+        P.build_data(cfg, Store(":memory:"), arms=[("targeted", 3.0), ("matched_control", 3.0)])
+    err = error_from_exception(e.value, "build_data")
+    assert err["code"] == "internal_error" and "not enough synthetic data" in err["message"]
