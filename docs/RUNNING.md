@@ -329,3 +329,43 @@ held-out probe problems. Each variant took ~29 min to train (1 epoch: 15 min) an
   accuracy is weaker, and reviewers will ask.
 - Among the tested settings, ratio 1 regressed least and moved the target slice most, but the differences are within
   noise; no config was changed.
+
+## 11. Self-distilled solution texts (option a, PLAN.md D14) — GPU-verified, EXPLORE (not paper evidence), 2026-10-06
+```powershell
+$env:HF_HUB_OFFLINE = "1"; $env:HF_DATASETS_OFFLINE = "1"
+python -m dreammachine.experiments.tune --config configs/tune_distill.yaml
+```
+Qwen3-0.6B, same dev set (200 GSM8K-train problems held out), 100 held-out probes and B8 diagnosis as §10; one seed.
+Both variants: targeted arm, ratio 3, **100k-token budget**, lr 2e-4, 2 epochs, max_seq_len 768. The only difference is
+the solution text. Distillation (`dreammachine/data/distill.py`): 2 samples per item, temperature 0.7, top-p 0.8,
+512 new tokens, qwen_boxed prompt; a sample is kept only if its final answer equals the code-made gold answer, it
+writes at least one equation, every equation is correct, and it was not cut off; otherwise the original text stays.
+Output: `runs/tuning/qwen06_distill/` (`summary.md`, `results/`, the arm's `.original.jsonl` / `.distill.json`).
+
+**Distillation:** 768 of 1,037 rows distilled before the budget was full (stops early), 58 min. Accepted 381/768 =
+50% (synthetic 270/588 = 46%, real 111/180 = 62%). Final arm: 705 items, of which 352 have model-written text =
+**65% of the tokens** (synthetic 251 of 540 items, real 101 of 165). The rest keep the terse original text.
+
+| Variant (100k tokens) | GSM8K dev (base 0.705) | Δ vs base [95% CI] | held-out probes (base 0.31) | Δ probes [95% CI] | target slice above (base 0.10) | answer length (base 748) | train |
+|---|---|---|---|---|---|---|---|
+| **distilled** | **0.590** | **−0.115 [−0.180, −0.050]** | 0.41 | +0.10 [+0.02, +0.19] | 0.27 | 599 chars | 10 min |
+| undistilled (control) | 0.465 | −0.240 [−0.315, −0.170] | 0.57 | +0.26 [+0.15, +0.37] | 0.49 | 307 chars | 14 min |
+
+**Findings**
+1. **Distillation halves the GSM8K regression** (−0.24 → −0.115) but does not remove it: the CI is still below 0.
+   Answers stay longer (599 vs 307 chars), confirming that style is the cause.
+2. **It also halves the targeted gain:** probes +0.26 → +0.10, target slice 0.49 → 0.27.
+3. Likely reason for both: **selection bias of rejection sampling.** Only items the model can already solve get a
+   model-written solution; 54% of the synthetic items — the hardest, i.e. the targeted ones — keep the terse code text.
+   So the model learns its own style from easy items and the terse style from the hard ones, and the hard items carry
+   less of the training signal. 35% of the tokens are still terse.
+4. The 100k-token undistilled control matches the 200k §10 result (−0.24 / +0.26), so halving the budget changes
+   nothing for the undistilled arm.
+
+**Options (team decision — nothing changed in the paper configs):**
+- (a2) More samples for the hard items (e.g. 4-8): raises acceptance on hard synthetic items; distilling costs ~2-4x.
+- (a3) "Rationalisation" (STaR): for items the model fails, show it the gold answer and ask for a solution; still
+  checked equation by equation. More model-written text — needs an explicit OK.
+- (b) Code-written solutions in a longer, model-like style (stays fully D2): every item gets the same style,
+  no selection bias; may lose some of the model's own phrasing.
+- (c) Accept the regression (all arms share it).
