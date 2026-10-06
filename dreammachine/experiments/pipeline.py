@@ -25,6 +25,7 @@ import numpy as np
 
 from ..data.loaders import Example, from_items, load_gsm8k, load_jsonl, save_jsonl
 from ..data.mixer import TrainExample, mix, to_train, whitespace_tokens
+from ..data.style import restyle
 from ..diagnosis.agreement import stratified_sample
 from ..diagnosis.lltm import LLTMResult, bootstrap_lltm, fit_lltm
 from ..diagnosis.targeting import (
@@ -359,7 +360,8 @@ def _write_features(cfg: Config, seed: int, features: dict[str, dict]) -> None:
 
 def _write_arm(cfg: Config, real: list[TrainExample], data: list[TrainExample], arm: str, ratio: float,
                seed: int) -> tuple[Path, dict]:
-    rows = mix(real, data, ratio, int(cfg.data.get("token_budget", 600_000)), seed=seed)
+    style = cfg.data.get("solution_style", "terse")   # "steps": longer code-written solutions (data/style.py)
+    rows = mix(restyle(real, style), restyle(data, style), ratio, int(cfg.data.get("token_budget", 600_000)), seed=seed)
     path = _arm_path(cfg, arm, ratio, seed)
     _write_train(rows, path)
     return path, _arm_stats(rows)

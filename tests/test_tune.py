@@ -48,7 +48,7 @@ def test_tune_keeps_dev_out_of_training_and_resumes(tmp_path, tiny_model_dir, mo
     spec = {"base": str(tmp_path / "base.yaml"), "model": str(tiny_model_dir), "dev_holdout": 20,
             "diagnosis_from": str(src), "output_dir": str(tmp_path / "tune"), "eval": {"probes_heldout_families": 10},
             "variants": [{"name": "t", "arm": "targeted", "ratio": 3, "train": {"learning_rate": 5e-5}},
-                         {"name": "real", "arm": "real_only"},
+                         {"name": "real", "arm": "real_only", "data": {"solution_style": "steps"}},
                          {"name": "d", "arm": "targeted", "ratio": 3, "data": {"token_budget": 3000},
                           "distill": {"samples": 2, "chunk": 8}}]}
     (tmp_path / "tune.yaml").write_text(yaml.safe_dump(spec), encoding="utf-8")
@@ -63,6 +63,7 @@ def test_tune_keeps_dev_out_of_training_and_resumes(tmp_path, tiny_model_dir, mo
                 .read_text(encoding="utf-8").splitlines()]
         assert not dev_ids & {r["id"] for r in rows}, name          # no dev problem in the training data
         assert res[name]["vs_base"]["dev"]["n"] == 20
+        assert all(r["completion"].startswith("Let's solve") for r in rows) == (name == "real")   # solution_style
     assert res["t"]["train"]["learning_rate"] == 5e-5
     assert "targeted" in (tmp_path / "tune" / "summary.md").read_text(encoding="utf-8")
     d = res["d"]["distill"]                                            # distilled variant (PLAN.md D14)

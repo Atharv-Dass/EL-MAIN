@@ -61,3 +61,31 @@ def test_rebalance_shuffles_deterministically():
     rows = [_row(i, "synthetic:train" if i % 2 else "gsm8k") for i in range(40)]
     a, b = rebalance(rows, 200, 1, seed=3), rebalance(rows, 200, 1, seed=3)
     assert [r.id for r in a] == [r.id for r in b] and total_tokens(a) <= 200
+
+
+# ---------------------------------------------------------------- code-written step style (option b)
+def test_steps_style_keeps_equations_and_answer_and_quotes_the_problem():
+    from dreammachine.data.style import restyle, steps_style
+    from dreammachine.diagnosis.cot_parse import parse_equations
+
+    q = ("Hana has 5 cookies in the bakery. Lucia bakes 9 muffins. Hana eats 2 of the cookies. "
+         "Hana receives 3 cookies from a friend. How many cookies does Hana end up with?")
+    sol = "Hana then has 5 - 2 = 3 left.\nHana now has 3 + 3 = 6.\n#### 6"
+    out = steps_style(q, sol)
+    assert out.endswith("\n#### 6") and out.startswith("Let's solve this step by step.")
+    assert "We need to find: How many cookies does Hana end up with?" in out
+    assert "**Step 1: Hana has 5 cookies in the bakery. Hana eats 2 of the cookies.**" in out   # distractor skipped
+    assert "**Step 2: Hana receives 3 cookies from a friend.**" in out      # the computed 3 is not looked up
+    assert [(e.lhs, e.correct) for e in parse_equations(out)] == [(e.lhs, e.correct) for e in parse_equations(sol)]
+    assert steps_style(q, "no final line") == "no final line"
+    row = TrainExample(q, sol, "synthetic:train", "x")
+    assert restyle([row], "terse") == [row] and restyle([row], "steps")[0].completion == out
+
+
+def test_unknown_solution_style_is_rejected():
+    import pytest
+
+    from dreammachine.data.style import restyle
+
+    with pytest.raises(ValueError):
+        restyle([], "fancy")
