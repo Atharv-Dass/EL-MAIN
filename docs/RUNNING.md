@@ -369,3 +369,34 @@ Output: `runs/tuning/qwen06_distill/` (`summary.md`, `results/`, the arm's `.ori
 - (b) Code-written solutions in a longer, model-like style (stays fully D2): every item gets the same style,
   no selection bias; may lose some of the model's own phrasing.
 - (c) Accept the regression (all arms share it).
+
+## 12. Longer code-written solutions (option b) — GPU-verified, EXPLORE (not paper evidence), 2026-10-06
+```powershell
+python -m dreammachine.experiments.tune --config configs/tune_style.yaml
+```
+Same setup as §11 (Qwen3-0.6B, targeted arm, ratio 3, 100k tokens, max_seq_len 768, one seed; same output folder, so
+`runs/tuning/qwen06_distill/summary.md` holds all three). `data.solution_style: steps` (`dreammachine/data/style.py`)
+rewrites every training solution, real and synthetic, by code: "Let's solve this step by step." / "We need to find:
+<question>" / one `**Step k: <quoted problem sentence>**` + the original line per step / "So the answer is n." /
+`#### n`. Equations and answers unchanged. Training solutions ~545 chars (before: synthetic 167, GSM8K 257).
+
+| Variant (100k tokens) | GSM8K dev (base 0.705) | Δ vs base [95% CI] | dev answers cut off at 512 tokens (base 0.02) | held-out probes (base 0.31) | target slice (base 0.10) | answer length |
+|---|---|---|---|---|---|---|
+| distilled (§11) | 0.590 | −0.115 [−0.180, −0.050] | 0.07 | 0.41 (+0.10) | 0.27 | 599 |
+| undistilled (§11) | 0.465 | −0.240 [−0.315, −0.170] | 0.035 | 0.57 (+0.26) | 0.49 | 307 |
+| **steps style** | **0.425** | **−0.280 [−0.360, −0.200]** | **0.185** | 0.50 (+0.19) | 0.39 | 728 |
+
+**Findings**
+1. **Option b in this form is worse than the terse control** on GSM8K dev (CIs overlap: not clearly worse, but
+   clearly not better), and keeps most of the probe gain.
+2. **Cause: the rigid template makes the 0.6B model loop.** 18.5% of dev answers run into the 512-token limit (base
+   2%). Inspected on the GPU (9 of the first 32 wrong dev answers were cut off): the model repeats
+   `**Step k: <same sentence>**` + the same equation until the limit, or forces a GSM8K problem into the
+   quote-then-compute pattern (e.g. "Oliver has 40 + 200 = 240 quarters" for "$40 and 200 quarters").
+3. **Length is not what matters; the model's own reasoning is.** The steps style is as long as the base model's
+   answers (728 vs 748 chars) yet regresses most; the only variant that reduced the regression is the one whose
+   text the model wrote itself (§11).
+
+The code stays (`solution_style` defaults to `terse`, so all other data is unchanged), but this style is not
+recommended. Remaining options: more samples / rationalisation for distillation (a2/a3, needs an explicit OK for
+more model-written text), or accept the regression (c).
