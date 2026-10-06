@@ -190,10 +190,22 @@ def distill_data(cfg: P.Config, store: Store, factory: P.RunnerFactory, arm: str
     dc = DistillConfig(**spec)
     runner = factory(cfg.model, None, cfg.gen(n_samples=dc.samples, temperature=dc.temperature, top_p=dc.top_p,
                                               max_new_tokens=dc.max_new_tokens, batch_size=dc.batch_size))
+    retry = None
+    if dc.retry_samples:   # second try for items without an accepted answer: other seed, more samples, same model
+        g2 = cfg.gen(n_samples=dc.retry_samples, temperature=dc.temperature, top_p=dc.top_p,
+                     max_new_tokens=dc.max_new_tokens, batch_size=dc.batch_size)
+        g2.seed += 1
+        if hasattr(runner, "model") and hasattr(runner, "tokenizer"):
+            from ..models.runner import HFRunner
+
+            retry = HFRunner.from_objects(runner.model, runner.tokenizer, g2)
+        else:
+            retry = factory(cfg.model, None, g2)
     t = time.time()
     out, st = distill_arm(rows, runner, dc, int(cfg.data.get("token_budget", 600_000)), ratio, seed,
-                          progress=lambda i, n: log(f"  distill {i}/{n} rows, {time.time() - t:.0f} s"))
-    del runner
+                          progress=lambda i, n: log(f"  distill {i}/{n} rows, {time.time() - t:.0f} s"),
+                          retry_runner=retry)
+    del runner, retry
     free_gpu()
     P._write_train(rows, path.with_name(path.stem + ".original.jsonl"))
     P._write_train(out, path)

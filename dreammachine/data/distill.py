@@ -27,6 +27,7 @@ from .mixer import TrainExample, example_tokens, take_by_token_budget
 @dataclass
 class DistillConfig:
     samples: int = 2              # answers generated per item
+    retry_samples: int = 0        # extra answers, only for items none of whose first `samples` answers was accepted
     temperature: float = 0.7      # Qwen3 model card, non-thinking mode
     top_p: float = 0.8
     max_new_tokens: int = 512
@@ -39,10 +40,13 @@ class DistillStats:
     n_items: int = 0
     n_distilled: int = 0
     n_kept_original: int = 0
+    n_retried: int = 0            # items that got the extra `retry_samples` answers
+    n_distilled_on_retry: int = 0
     by_source: dict = field(default_factory=dict)   # "synthetic" / "real" -> [distilled, total]
 
     def to_dict(self) -> dict:
         return {"n_items": self.n_items, "n_distilled": self.n_distilled, "n_kept_original": self.n_kept_original,
+                "n_retried": self.n_retried, "n_distilled_on_retry": self.n_distilled_on_retry,
                 "distilled_share": self.n_distilled / self.n_items if self.n_items else None,
                 "by_source": self.by_source}
 
@@ -59,13 +63,27 @@ def _kind(row: TrainExample) -> str:
     return "synthetic" if row.source.startswith("synthetic") else "real"
 
 
+def _first_accepted(samples: list[str], cut, gold: str) -> str | None:
+    return next((s for k, s in enumerate(samples) if accept(s, gold, bool(cut[k]) if cut else False)), None)
+
+
+def _picks(runner, rows: list[TrainExample]) -> list[str | None]:
+    answers = runner.generate([r.prompt for r in rows])
+    cut = getattr(runner, "last_truncated", None)
+    return [_first_accepted(samples, cut[i] if cut else None, final_answer(row.completion))
+            for i, (row, samples) in enumerate(zip(rows, answers))]
+
+
 def distill_arm(rows: list[TrainExample], runner, cfg: DistillConfig, budget: int, ratio: float, seed: int,
-                progress: Callable[[int, int], None] | None = None) -> tuple[list[TrainExample], DistillStats]:
+                progress: Callable[[int, int], None] | None = None,
+                retry_runner=None) -> tuple[list[TrainExample], DistillStats]:
     """Distill an arm's rows in file order, then trim it back to `budget` tokens (see `rebalance`).
 
     Accepted model answers are longer than the reference solutions, so fewer items fit the budget: rows are
     distilled chunk by chunk and the loop stops once both the real and the synthetic share are full, because rows
-    after that point would be cut by `rebalance` anyway. Gold answer = the row's `#### n` line."""
+    after that point would be cut by `rebalance` anyway. Gold answer = the row's `#### n` line.
+    `retry_runner` (generating `cfg.retry_samples` answers per question, with another seed) gets a second try at the
+    items of a chunk that had no accepted answer — mostly the hard, targeted ones (docs/RUNNING.md §11)."""
     syn_budget = int(budget * ratio / (1 + ratio))
     need = {"real": budget - syn_budget, "synthetic": syn_budget}
     used = {"real": 0, "synthetic": 0}
@@ -76,12 +94,15 @@ def distill_arm(rows: list[TrainExample], runner, cfg: DistillConfig, budget: in
         if all(used[k] >= need[k] or not left[k] for k in need):
             break
         batch = rows[start:start + cfg.chunk]
-        answers = runner.generate([r.prompt for r in batch])
-        cut = getattr(runner, "last_truncated", None)
-        for i, (row, samples) in enumerate(zip(batch, answers)):
-            gold = final_answer(row.completion)
-            pick = next((s for k, s in enumerate(samples)
-                         if accept(s, gold, bool(cut[i][k]) if cut else False)), None)
+        picks = _picks(runner, batch)
+        failed = [i for i, p in enumerate(picks) if p is None]
+        if failed and retry_runner is not None and cfg.retry_samples:
+            stats.n_retried += len(failed)
+            for i, p in zip(failed, _picks(retry_runner, [batch[i] for i in failed])):
+                if p is not None:
+                    picks[i] = p
+                    stats.n_distilled_on_retry += 1
+        for row, pick in zip(batch, picks):
             kind = _kind(row)
             tally = stats.by_source.setdefault(kind, [0, 0])
             tally[1] += 1

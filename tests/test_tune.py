@@ -50,7 +50,7 @@ def test_tune_keeps_dev_out_of_training_and_resumes(tmp_path, tiny_model_dir, mo
             "variants": [{"name": "t", "arm": "targeted", "ratio": 3, "train": {"learning_rate": 5e-5}},
                          {"name": "real", "arm": "real_only", "data": {"solution_style": "steps"}},
                          {"name": "d", "arm": "targeted", "ratio": 3, "data": {"token_budget": 3000},
-                          "distill": {"samples": 2, "chunk": 8}}]}
+                          "distill": {"samples": 2, "retry_samples": 3, "chunk": 8}}]}
     (tmp_path / "tune.yaml").write_text(yaml.safe_dump(spec), encoding="utf-8")
     factory = lambda model, adapter, gen: SimulatedRunner(oracle, seed=len(adapter or ""), n_samples=gen.n_samples)
 
@@ -68,6 +68,7 @@ def test_tune_keeps_dev_out_of_training_and_resumes(tmp_path, tiny_model_dir, mo
     assert "targeted" in (tmp_path / "tune" / "summary.md").read_text(encoding="utf-8")
     d = res["d"]["distill"]                                            # distilled variant (PLAN.md D14)
     assert d["n_distilled"] > 0 and d["n_items"] == d["n_distilled"] + d["n_kept_original"]
+    assert d["n_retried"] >= d["n_distilled_on_retry"]
     assert res["d"]["data"]["targeted_r3_s0"]["tokens"] <= 3000
     data = tmp_path / "tune" / "d" / "data"
     assert (data / "targeted_r3_s0.original.jsonl").exists() and (data / "targeted_r3_s0.distill.json").exists()

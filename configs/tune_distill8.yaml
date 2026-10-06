@@ -1,0 +1,24 @@
+# Dev-set test: self-distillation with more samples for the hard items (option a2; approved by the user 2026-10-06).
+#   python -m dreammachine.experiments.tune --config configs/tune_distill8.yaml
+# EXPLORE ONLY. Same setup and output folder as configs/tune_distill.yaml / tune_style.yaml (their finished variants
+# are skipped, summary.md compares all four). Every item gets 2 answers as before; an item with no accepted answer
+# gets 6 more (other seed), so up to 8 tries. Aim: more of the hard, targeted items get the model's own text
+# (§11: only 46% of synthetic items did with 2 tries).
+base: configs/explore.yaml
+model: Qwen/Qwen3-0.6B
+seed: 0
+dev_holdout: 200
+diagnosis_from: runs/pipelines/5a584e16390b
+output_dir: runs/tuning/qwen06_distill
+base_results: runs/tuning/qwen06/results/base.json
+eval:
+  probes_heldout_families: 100
+variants:
+  - {name: distilled_b100k_r3,   arm: targeted, ratio: 3, data: {token_budget: 100000}, train: {max_seq_len: 768},
+     distill: {samples: 2, temperature: 0.7, top_p: 0.8, max_new_tokens: 512, batch_size: 32}}
+  - {name: undistilled_b100k_r3, arm: targeted, ratio: 3, data: {token_budget: 100000},
+     train: {max_seq_len: 768}}
+  - {name: steps_style_b100k_r3, arm: targeted, ratio: 3, data: {token_budget: 100000, solution_style: steps},
+     train: {max_seq_len: 768}}
+  - {name: distilled8_b100k_r3,  arm: targeted, ratio: 3, data: {token_budget: 100000}, train: {max_seq_len: 768},
+     distill: {samples: 2, retry_samples: 6, temperature: 0.7, top_p: 0.8, max_new_tokens: 512, batch_size: 32}}

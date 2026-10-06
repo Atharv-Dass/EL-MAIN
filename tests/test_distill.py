@@ -89,3 +89,15 @@ def test_unknown_solution_style_is_rejected():
 
     with pytest.raises(ValueError):
         restyle([], "fancy")
+
+
+def test_retry_only_for_items_without_an_accepted_answer():
+    rows = [_row(i, "synthetic:train") for i in range(6)]
+    first, retry = FakeRunner([WRONG_STEP, WRONG_ANSWER]), FakeRunner([NO_WORK, LONG_OK, LONG_OK])
+    out, st = distill_arm(rows, first, DistillConfig(samples=2, retry_samples=3, chunk=4), 10_000, 1, 0,
+                          retry_runner=retry)
+    assert st.n_retried == 6 and st.n_distilled_on_retry == 6 and st.n_distilled == 6
+    assert {r.completion for r in out} == {LONG_OK} and retry.calls == 2      # one retry call per chunk
+    first, retry = FakeRunner([LONG_OK]), FakeRunner([LONG_OK])
+    _, st = distill_arm(rows, first, DistillConfig(retry_samples=3, chunk=4), 10_000, 1, 0, retry_runner=retry)
+    assert retry.calls == 0 and st.n_retried == 0                             # nothing failed: no retry
