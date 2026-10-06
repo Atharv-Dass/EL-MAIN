@@ -400,3 +400,37 @@ rewrites every training solution, real and synthetic, by code: "Let's solve this
 The code stays (`solution_style` defaults to `terse`, so all other data is unchanged), but this style is not
 recommended. Remaining options: more samples / rationalisation for distillation (a2/a3, needs an explicit OK for
 more model-written text), or accept the regression (c).
+
+## 13. Self-distillation with more tries (option a2) — GPU-verified, EXPLORE (not paper evidence), 2026-10-06
+```powershell
+python -m dreammachine.experiments.tune --config configs/tune_distill8.yaml
+```
+Same setup as §11; every item gets 2 answers, an item with none accepted gets 6 more (other seed): up to 8 tries.
+Distillation took 137 min (704 rows until the budget was full). Accepted 531/704 = 75% (synthetic 392/536 = 73%,
+was 46% with 2 tries; real 139/168 = 83%); 179 of the 352 retried items were rescued by the retry. Final arm: 605
+items, **85% of the tokens model-written** (§11: 65%).
+
+| Variant (100k tokens) | items | model-written tokens | GSM8K dev (base 0.705) | Δ vs base [95% CI] | held-out probes (base 0.31) | Δ probes [95% CI] | target slice (base 0.10) | answer length |
+|---|---|---|---|---|---|---|---|---|
+| undistilled (§11) | 1037 | 0% | 0.465 | −0.240 [−0.315, −0.170] | 0.57 | +0.26 [+0.15, +0.37] | 0.49 | 307 |
+| steps style (§12) | 612 | 0% | 0.425 | −0.280 [−0.360, −0.200] | 0.50 | +0.19 [+0.08, +0.30] | 0.39 | 728 |
+| distilled, 2 tries (§11) | 705 | 65% | 0.590 | −0.115 [−0.180, −0.050] | 0.41 | +0.10 [+0.02, +0.19] | 0.27 | 599 |
+| **distilled, up to 8 tries** | 605 | 85% | **0.625** | **−0.080 [−0.145, −0.015]** | 0.39 | +0.08 [−0.01, +0.17] | 0.16 | 718 |
+
+**Findings**
+1. **More model-written text → less GSM8K loss, but also less targeted gain.** It is a clear trade-off across the
+   three text variants: 0% / 65% / 85% model-written tokens give −0.24 / −0.115 / −0.08 on GSM8K dev and +0.26 /
+   +0.10 / +0.08 on the probes (target slice 0.49 / 0.27 / 0.16). At 85% the probe gain is no longer significant.
+2. **Why the gain shrinks** (two causes, not separated by this test):
+   - training on answers the model already gets right teaches it little new — the targeted gain came from imitating
+     the code-written solutions of problems it could *not* solve;
+   - at an equal token budget, longer solutions mean fewer problems: 605 vs 1037 items.
+3. Part of the undistilled probe gain may be learning the probe problems' *format* (they are code-generated like the
+   training data), not only the skill; the GSM8K regression and the probe gain come from the same imitation.
+4. No variant removes the regression: the smallest is still −0.08 with the CI below 0 (one seed, 200 problems).
+
+**Recommendation (team decision; no paper config changed):** keep the code-written (terse) solutions for the paper
+runs — D2 stays fully intact and the targeting signal is largest, which is what the paper compares (targeted vs
+matched_control, both trained the same way, so the shared GSM8K cost does not bias that comparison). Report the
+GSM8K regression as a stated cost, with this dev study (§10-13) as the evidence that it comes from the solution style
+and that self-distillation trades it against the targeted gain. Self-distillation can be reported as an ablation.
