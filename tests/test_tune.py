@@ -48,21 +48,28 @@ def test_tune_keeps_dev_out_of_training_and_resumes(tmp_path, tiny_model_dir, mo
     spec = {"base": str(tmp_path / "base.yaml"), "model": str(tiny_model_dir), "dev_holdout": 20,
             "diagnosis_from": str(src), "output_dir": str(tmp_path / "tune"), "eval": {"probes_heldout_families": 10},
             "variants": [{"name": "t", "arm": "targeted", "ratio": 3, "train": {"learning_rate": 5e-5}},
-                         {"name": "real", "arm": "real_only"}]}
+                         {"name": "real", "arm": "real_only"},
+                         {"name": "d", "arm": "targeted", "ratio": 3, "data": {"token_budget": 3000},
+                          "distill": {"samples": 2, "chunk": 8}}]}
     (tmp_path / "tune.yaml").write_text(yaml.safe_dump(spec), encoding="utf-8")
     factory = lambda model, adapter, gen: SimulatedRunner(oracle, seed=len(adapter or ""), n_samples=gen.n_samples)
 
     res = tune(tmp_path / "tune.yaml", factory=factory, log=lambda s: None)
-    assert set(res) == {"base", "t", "real"}
+    assert set(res) == {"base", "t", "real", "d"}
     dev_ids = {f"r{i}" for i in range(280, 300)}
     assert set(res["base"]["eval"]["dev"]["items"]) == dev_ids
-    for name, arm, ratio in (("t", "targeted", 3), ("real", "real_only", 0)):
+    for name, arm, ratio in (("t", "targeted", 3), ("real", "real_only", 0), ("d", "targeted", 3)):
         rows = [json.loads(l) for l in (tmp_path / "tune" / name / "data" / f"{arm}_r{ratio}_s0.jsonl")
                 .read_text(encoding="utf-8").splitlines()]
         assert not dev_ids & {r["id"] for r in rows}, name          # no dev problem in the training data
         assert res[name]["vs_base"]["dev"]["n"] == 20
     assert res["t"]["train"]["learning_rate"] == 5e-5
     assert "targeted" in (tmp_path / "tune" / "summary.md").read_text(encoding="utf-8")
+    d = res["d"]["distill"]                                            # distilled variant (PLAN.md D14)
+    assert d["n_distilled"] > 0 and d["n_items"] == d["n_distilled"] + d["n_kept_original"]
+    assert res["d"]["data"]["targeted_r3_s0"]["tokens"] <= 3000
+    data = tmp_path / "tune" / "d" / "data"
+    assert (data / "targeted_r3_s0.original.jsonl").exists() and (data / "targeted_r3_s0.distill.json").exists()
     calls = []
     tune(tmp_path / "tune.yaml", factory=lambda *a: calls.append(a) or factory(*a), log=lambda s: None)
     assert calls == []                                                 # everything finished: nothing re-run

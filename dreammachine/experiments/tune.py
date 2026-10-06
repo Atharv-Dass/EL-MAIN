@@ -7,6 +7,9 @@ The dev set is the last `dev_holdout` GSM8K *train* problems; they are removed f
 Each variant = one arm trained with its own settings, then evaluated on the dev set and a held-out probe set,
 paired against the untrained model on the same problems. An existing diagnosis (target + LLTM) is reused.
 Resumable: finished variants (results/<name>.json) are skipped; training resumes from its last checkpoint.
+
+Variant keys: name, arm, ratio, train: {TrainConfig overrides}, data: {data-section overrides, e.g. token_budget},
+distill: {DistillConfig fields} (PLAN.md D14: the base model rewrites the solution texts before training).
 """
 
 from __future__ import annotations
@@ -107,6 +110,7 @@ def tune(config_path: str | Path, factory: P.RunnerFactory | None = None, log: C
         cfg = copy.deepcopy(base)
         cfg.name, cfg.output_dir = f"tune:{name}", str(root / name)
         cfg.train = {**cfg.train, **v.get("train", {})}
+        cfg.data = {**cfg.data, **v.get("data", {})}
         ratio = float(v.get("ratio", 3))
         if v["arm"] != "real_only":
             cfg.data = {**cfg.data, "ratios": [ratio], "main_ratio": ratio}
@@ -121,6 +125,8 @@ def tune(config_path: str | Path, factory: P.RunnerFactory | None = None, log: C
     log(f"dev set: {len(sets['dev'])} GSM8K-train problems (excluded from training); "
         f"probes: {len(sets.get('probes_heldout_families', []))}")
     base_file = root / "results" / "base.json"
+    if not base_file.exists() and spec.get("base_results"):   # reuse an earlier untrained-model eval (same sets)
+        shutil.copy2(spec["base_results"], base_file)
     if base_file.exists():
         base_res = json.loads(base_file.read_text(encoding="utf-8"))
     else:
@@ -140,7 +146,10 @@ def tune(config_path: str | Path, factory: P.RunnerFactory | None = None, log: C
         cfg = variant_cfg(name, v)
         arm, ratio = v["arm"], 0.0 if v["arm"] == "real_only" else float(v.get("ratio", 3))
         t0 = time.time()
-        stats = P.build_data(cfg, store, arms=[(arm, ratio)])
+        if "distill" in v:
+            stats = distill_data(cfg, store, factory, arm, ratio, v["distill"], log)
+        else:
+            stats = P.build_data(cfg, store, arms=[(arm, ratio)])
         t1 = time.time()
         free_gpu()
         adapter = P.train_arm(cfg, store, arm, ratio, cfg.seeds[0])
@@ -151,6 +160,9 @@ def tune(config_path: str | Path, factory: P.RunnerFactory | None = None, log: C
         res = {"name": name, "arm": arm, "ratio": ratio, "train": cfg.train, "data": stats["arms"],
                "eval": ev, "build_s": t1 - t0, "train_s": t2 - t1, "eval_s": t3 - t2,
                "vs_base": {k: _vs(ev[k]["items"], base_res["eval"][k]["items"]) for k in ev}}
+        dfile = P._arm_path(cfg, arm, ratio, cfg.seeds[0]).with_suffix(".distill.json")
+        if dfile.exists():
+            res["distill"] = json.loads(dfile.read_text(encoding="utf-8"))["distill"]
         out_file.write_text(json.dumps(res, indent=2), encoding="utf-8")
         results[name] = res
         d = res["vs_base"]["dev"]
@@ -160,6 +172,37 @@ def tune(config_path: str | Path, factory: P.RunnerFactory | None = None, log: C
     (root / "summary.md").write_text(summary, encoding="utf-8")
     log(summary)
     return results
+
+
+def distill_data(cfg: P.Config, store: Store, factory: P.RunnerFactory, arm: str, ratio: float, spec: dict,
+                 log: Callable[[str], None] = print) -> dict:
+    """build_data for one arm, then self-distil its solution texts (PLAN.md D14) and trim it back to the budget.
+    The stats file marks the step done, so a resumed run does not rebuild (and so undo) the distilled arm."""
+    from ..data.distill import DistillConfig, distill_arm
+
+    seed = cfg.seeds[0]
+    path = P._arm_path(cfg, arm, ratio, seed)
+    stats_file = path.with_name(path.stem + ".distill.json")
+    if stats_file.exists() and path.exists():
+        return json.loads(stats_file.read_text(encoding="utf-8"))["build"]
+    built = P.build_data(cfg, store, arms=[(arm, ratio)])
+    rows = P._read_train(path)
+    dc = DistillConfig(**spec)
+    runner = factory(cfg.model, None, cfg.gen(n_samples=dc.samples, temperature=dc.temperature, top_p=dc.top_p,
+                                              max_new_tokens=dc.max_new_tokens, batch_size=dc.batch_size))
+    t = time.time()
+    out, st = distill_arm(rows, runner, dc, int(cfg.data.get("token_budget", 600_000)), ratio, seed,
+                          progress=lambda i, n: log(f"  distill {i}/{n} rows, {time.time() - t:.0f} s"))
+    del runner
+    free_gpu()
+    P._write_train(rows, path.with_name(path.stem + ".original.jsonl"))
+    P._write_train(out, path)
+    built = {**built, "arms": {**built["arms"], path.stem: P._arm_stats(out)}}
+    stats_file.write_text(json.dumps({"build": built, "distill": {**st.to_dict(), "config": spec,
+                                                                    "seconds": time.time() - t}}, indent=2),
+                          encoding="utf-8")
+    log(f"  distilled {st.n_distilled}/{st.n_items} rows ({st.by_source}); arm now {P._arm_stats(out)}")
+    return built
 
 
 def summarise(results: dict) -> str:
