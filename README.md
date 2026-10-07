@@ -1,4 +1,4 @@
-# EL-MAIN — DreamMachine
+# EL MAIN: DreamMachine
 
 Backend and frontend of the project (MAIN EL, Semester 3).
 
