@@ -100,3 +100,11 @@ Windows spills VRAM into system RAM instead of OOM — keep batches inside 8 GB)
 
 ## Pointers
 `PLAN.md` · `docs/API_CONTRACT.md` · `docs/RESEARCH.md` (protected) · `docs/COMPONENTS.md` · `docs/RUNNING.md`
+· `docs/WORK.md` (plain-words work log + next steps) · `docs/weakness.md` (each model's weaknesses, plain words)
+· `docs/PLAN_CHANGES.md` (history of PLAN.md changes)
+
+## Keeping the docs current (asked by the user, 2026-10-07)
+- Update `PLAN.md` at the end of every work session; every change to it gets a line in `docs/PLAN_CHANGES.md`
+  in the same commit.
+- After each model's diagnosis or paper run: update `docs/weakness.md` and `docs/WORK.md`.
+- While a paper run is going, commit every doc edit at once: the repo must be clean when a job's preflight runs.
