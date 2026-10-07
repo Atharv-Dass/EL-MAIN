@@ -471,8 +471,11 @@ def default_benchmarks(cfg: Config) -> list[str]:
             "probes_train_families", "probes_heldout_families"]
 
 
-def benchmark_options(cfg: Config, name: str) -> dict[str, Any]:
-    """limit + loader options for one benchmark, from the config (local JSONL overrides, probe grid)."""
+def benchmark_options(cfg: Config, name: str, baseline: bool = False) -> dict[str, Any]:
+    """limit + loader options for one benchmark, from the config (local JSONL overrides, probe grid).
+    baseline=True: the untrained model's evaluation, which may be larger (`eval.baseline_limits`, per benchmark).
+    Every loader keeps a fixed order (first N / template spread / seeded subset), so the smaller post-training set is
+    a subset of the baseline set and before/after comparisons stay paired."""
     e = cfg.eval
     if name == "gsm8k":
         opts = {"limit": e.get("gsm8k_limit"), "path": cfg.eval_data.get("gsm8k_test")}
@@ -481,20 +484,25 @@ def benchmark_options(cfg: Config, name: str) -> dict[str, Any]:
         opts = {"limit": e.get("gsm_symbolic_limit"), "path": cfg.eval_data.get(f"gsm_symbolic_{v}")}
     elif name.startswith("probes_"):
         opts = {"grid": cfg.grid(e), "per_cell": e.get("probe_per_cell", 2)}
+        if e.get("probe_limit") is not None:
+            opts["limit"] = int(e["probe_limit"])
     else:
         opts = {}
+    if baseline and name in (e.get("baseline_limits") or {}):
+        opts["limit"] = e["baseline_limits"][name]
     if e.get("benchmark_limit") is not None:      # explore: one limit for every benchmark (PLAN.md §6.1)
         opts["limit"] = int(e["benchmark_limit"])
     return opts
 
 
-def eval_sets(cfg: Config) -> dict[str, list[Example]]:
-    """Every evaluation benchmark, read through the registry (`eval.benchmarks`, default: the original list)."""
+def eval_sets(cfg: Config, baseline: bool = False) -> dict[str, list[Example]]:
+    """Every evaluation benchmark, read through the registry (`eval.benchmarks`, default: the original list).
+    baseline=True: the untrained model's (possibly larger) sets, see `benchmark_options`."""
     from ..benchmarks import registry
 
     sets: dict[str, list[Example]] = {}
     for name in cfg.eval.get("benchmarks") or default_benchmarks(cfg):
-        sets[name] = registry.get(name).load(**benchmark_options(cfg, name))
+        sets[name] = registry.get(name).load(**benchmark_options(cfg, name, baseline=baseline))
     return sets
 
 
@@ -505,7 +513,7 @@ def evaluate_model(cfg: Config, store: Store, runner_factory: RunnerFactory, arm
     chosen (target.json, or diagnosis.json for the CLI). progress(done, total) counts problems over all benchmarks."""
     adapter = None if arm == "base" else str(adapter_dir(cfg, arm, ratio, seed) / "adapter")
     tag = "base" if arm == "base" else f"{arm}_r{ratio:g}_s{seed}"
-    sets = eval_sets(cfg)
+    sets = eval_sets(cfg, baseline=arm == "base")
     run = _new_run(store, cfg, f"{cfg.name}:eval:{tag}", "eval",
                    {"arm": arm, "ratio": ratio, "seed": seed, "adapter": adapter, "model": cfg.model,
                     "prompt_version": cfg.prompt_version, "benchmarks": list(sets),

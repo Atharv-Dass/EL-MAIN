@@ -77,17 +77,18 @@ def env(tmp_path, monkeypatch, tiny_model_dir):
 
 
 # ----------------------------------------------------------------- step lists
-def test_paper_step_list_is_18_train_18_eval():
+def test_paper_step_list_is_15_train_15_eval():
+    """configs/main.yaml: 5 arm keys (targeted at 3:1 and 9:1; 1:1 removed by the user 2026-10-07) x 3 seeds."""
     store = Store(":memory:")
     jid = create_job_from_request(store, "pipeline", {"mode": "paper", "model": "Qwen/Qwen3-0.6B"},
                                   presets=load_presets())
     steps = store.get_steps(jid)
     stages = [s["stage"] for s in steps]
-    assert len(steps) == 42 and stages.count("train") == 18 and stages.count("evaluate") == 18
+    assert len(steps) == 36 and stages.count("train") == 15 and stages.count("evaluate") == 15
     assert stages[:5] == ["preflight", "baseline", "diagnose", "choose_target", "build_data"] and stages[-1] == "compare"
-    keys = [s["key"] for s in steps if s["stage"] == "train"][:6]
+    keys = [s["key"] for s in steps if s["stage"] == "train"][:5]
     assert keys == ["train:real_only_r0_s0", "train:untargeted_r3_s0", "train:matched_control_r3_s0",
-                    "train:targeted_r1_s0", "train:targeted_r3_s0", "train:targeted_r9_s0"]
+                    "train:targeted_r3_s0", "train:targeted_r9_s0"]
     for a, b in zip(steps[5:-1:2], steps[6:-1:2]):          # train -> evaluate, interleaved per arm key
         assert a["key"].split(":")[1] == b["key"].split(":")[1] and (a["stage"], b["stage"]) == ("train", "evaluate")
     job = store.get_job(jid)

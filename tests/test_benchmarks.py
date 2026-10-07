@@ -148,3 +148,21 @@ def test_gsm_symbolic_limit_spreads_across_templates(tmp_path):
     gsm = [Example(id=f"g{i}", source="gsm8k", question="q", answer="1") for i in range(3)]
     assert spread_templates(gsm) == gsm                       # no template metadata: order unchanged
     assert B.get("gsm_symbolic:main").version == 2 and B.get("gsm8k").version == 1
+
+
+def test_baseline_limits_give_a_larger_superset_for_the_untrained_model():
+    """configs/main.yaml (2026-10-07): the baseline answers more problems than each trained model, and every
+    post-training problem is also in the baseline set (paired before/after)."""
+    from dreammachine.experiments import pipeline as P
+
+    small = {"steps": [2, 4], "digits": [1, 2], "distractors": [0], "op_profiles": ["addsub", "mixed"]}
+    cfg = P.Config(name="t", output_dir="unused", eval={
+        "benchmarks": ["probes_train_families", "probes_heldout_families"], "grid": small, "probe_per_cell": 2,
+        "probe_limit": 5, "baseline_limits": {"probes_train_families": None, "probes_heldout_families": 12}})
+    after, before = P.eval_sets(cfg), P.eval_sets(cfg, baseline=True)
+    for name in after:
+        assert len(after[name]) == 5
+        assert {e.id for e in after[name]} <= {e.id for e in before[name]}
+    assert len(before["probes_train_families"]) == 16 and len(before["probes_heldout_families"]) == 12
+    cfg.eval["benchmark_limit"] = 3                      # explore's single limit still wins everywhere
+    assert {len(v) for v in P.eval_sets(cfg, baseline=True).values()} == {3}

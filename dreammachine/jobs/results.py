@@ -198,7 +198,9 @@ def build_results(store: Store, job_id: str, complete: bool | None = None) -> di
                 after = _mean_over_seeds(runs, b)
                 ga, n = _slice(after, {**base.features, **{k: v for r in runs for k, v in r.features.items()}},
                                b, target["feature"], target["threshold"])
-                gb, _ = _slice(base_items[b], base.features, b, target["feature"], target["threshold"])
+                # before = the untrained model on the same problems (its baseline set may be larger)
+                gb, _ = _slice({k: v for k, v in base_items[b].items() if k in after}, base.features, b,
+                               target["feature"], target["threshold"])
                 slices[b] = {k: {"before": float(np.mean(gb[k])) if gb[k] else None,
                                  "after": float(np.mean(ga[k])) if ga[k] else None, "n": n[k]}
                              for k in ("above", "at_or_below")}
