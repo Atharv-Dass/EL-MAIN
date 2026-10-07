@@ -225,16 +225,18 @@ Source: `configs/models.yaml`. `params_b` is approximate. Gated models need `hug
     "allowed": { "ratio": [1, 3, 9], "seeds": [0, 1, 2], "max_seeds": 3, "min_benchmark_limit": 10 }
   },
   "paper": {
-    "description": "Fixed protocol: 4 arms incl. matched control, 3 seeds, ratios 1/3/9 for targeted, equal token budget.",
-    "fixed": { "arms": ["real_only", "untargeted", "matched_control", "targeted"], "seeds": [0, 1, 2], "main_ratio": 3, "targeted_ratios": [1, 3, 9] },
+    "description": "Fixed protocol: 4 arms incl. matched control, 3 seeds, ratios 3/9 for targeted, equal token budget.",
+    "fixed": { "arms": ["real_only", "untargeted", "matched_control", "targeted"], "seeds": [0, 1, 2], "main_ratio": 3, "targeted_ratios": [3, 9] },
     "settable": ["name", "model"],
-    "n_steps": 42
+    "n_steps": 36
   },
   "prompt_versions": ["dm_v1", "qwen_boxed", "v2_700"],
   "default_prompt_version": "qwen_boxed"
 }
 ```
-(`n_steps` = 5 setup steps + 18 train + 18 evaluate + compare = 42 with the current `main.yaml`. Numbers in
+(`n_steps` = 5 setup steps + 15 train + 15 evaluate + compare = 36 with the current `main.yaml` (paper protocol
+trimmed by the user on 2026-10-07, PLAN.md D15). In a paper run that reuses an earlier baseline and diagnosis
+(PLAN.md D16) those two steps have status `skipped`. Numbers in
 `explore.defaults` come from `configs/explore.yaml` and may change. `prompt_versions` lists the registered prompts;
 `default_prompt_version` is the project prompt every job uses — for display only, it cannot be set per job.)
 
@@ -760,3 +762,4 @@ step:  pending -> running -> done | failed | cancelled
 | 0.1.0 | 2026-10-04 | First draft: pipelines, benchmark runs, catalog, results, runs drill-down, tools. Not implemented yet. |
 | 0.2.0 | 2026-10-04 | After review: mock mode + "MOCK DATA" badge and where the frontend runs (§1.1); create endpoints return 202 with a `worker_not_running` warning instead of 503; job-id rules and 404 on the wrong path; UTF-8-safe log chunks; `samples` is now `Page<TrainingSample>`; new `DELETE` for explore pipelines and benchmark runs (`paper_protected`); arm dataset download; `eta_s`, `output_dir`, `output_bytes`, step `metrics`, `/system.disk`; full TypeScript types incl. `ratio` vs `ratios`. Not implemented yet. |
 | 0.2.1 | 2026-10-05 | Additive: `ResponseRecord.diagnosis` gains `lastline`, `lastline_v0`, `format_ok`, `truncated`; `GET /presets` gains `prompt_versions` and `default_prompt_version`. |
+| 0.2.1 | 2026-10-07 | Examples only, no shape change: the `GET /presets` paper example now shows the trimmed protocol (targeted ratios 3/9, 36 steps); paper runs may show `baseline`/`diagnose` as `skipped` (reused). |
