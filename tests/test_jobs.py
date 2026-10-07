@@ -2,6 +2,7 @@
 answers every benchmark; the tiny random Llama is trained for 2 steps. No network."""
 
 import json
+from dataclasses import asdict
 import subprocess
 import sys
 from pathlib import Path
@@ -215,6 +216,43 @@ def test_reuse_benchmark_run_without_diagnosis(env):
     new = create(arms=["targeted"], reuse_from=src)
     st = {s["key"]: s["status"] for s in store.get_steps(new)}
     assert st["baseline"] == "skipped" and st["diagnose"] == "pending"   # no diagnosis to reuse: run it fresh
+
+
+def test_paper_run_reuses_an_earlier_paper_baseline_and_diagnosis(env, tiny_model_dir):
+    """User decision 2026-10-07: a paper run does not re-run a baseline that an earlier paper run of the same model
+    already has, as long as it covers every post-training problem with the same settings."""
+    store, factory, _, presets, tmp = env
+    small_eval = {**presets["paper"].eval, "benchmark_limit": None, "gsm8k_limit": 10, "probe_per_cell": 2,
+                  "probe_limit": 5, "baseline_limits": {"gsm8k": 20, "probes_train_families": 8,
+                                                        "probes_heldout_families": 8}}
+    paper = {**presets, "paper": P.Config(**{**asdict(presets["paper"]), "eval": small_eval})}
+
+    def create_paper(ps=paper):
+        return create_job_from_request(store, "pipeline", {"mode": "paper", "model": str(tiny_model_dir)},
+                                       presets=ps, known_models=[], runs_root=tmp / "pipelines",
+                                       allow_local_models=True)
+
+    a = create_paper()
+    assert store.get_job(a)["resolved"]["reuse"] is None                 # nothing earlier to reuse
+    for i in range(3):                                                   # preflight, baseline, diagnose
+        assert execute_step(store, a, i, factory, log=lambda s: None) == "done"
+    base_run = store.get_step(a, 1)["run_ids"]
+    assert {r["source"] for r in store.get_responses(base_run[0])} >= {"gsm8k", "probes_train_families"}
+    b = create_paper()
+    reuse = store.get_job(b)["resolved"]["reuse"]
+    assert reuse["source"] == a and reuse["baseline_run_ids"] == base_run and reuse["diagnosis_reused"]
+    st = {s["key"]: s["status"] for s in store.get_steps(b)}
+    assert st["baseline"] == st["diagnose"] == "skipped" and st["choose_target"] == "pending"
+    assert execute_step(store, b, 0, factory, log=lambda s: None) == "done"   # preflight copies the files
+    assert (Path(store.get_job(b)["output_dir"]) / "diagnosis.json").exists()
+    # a larger post-training set than the earlier baseline covers -> no reuse
+    bigger = {**paper, "paper": P.Config(**{**asdict(paper["paper"]),
+                                            "eval": {**small_eval, "probe_limit": 12}})}
+    assert store.get_job(create_paper(bigger))["resolved"]["reuse"] is None
+    # other generation settings -> no reuse
+    other = {**paper, "paper": P.Config(**{**asdict(paper["paper"]),
+                                           "generation": {**paper["paper"].generation, "max_new_tokens": 99}})}
+    assert store.get_job(create_paper(other))["resolved"]["reuse"] is None
 
 
 # --------------------------------------------------------- cancel and errors

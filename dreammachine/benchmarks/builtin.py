@@ -5,7 +5,7 @@ Loader options (passed by `experiments.pipeline.eval_sets` from the config):
     probes_*                   grid=ProbeGrid, per_cell=int (probe seeds are fixed: 777 train, 778 held-out)
 
 `limit`: GSM8K / GSM-Symbolic take the first `limit` problems (as before). Probe sets take a random subset of
-`limit` problems (seeded by `seed`, original order kept), so every grid cell can still appear.
+`limit` problems (seeded by `seed`, original order kept; nested: a smaller limit is a subset of a larger one).
 """
 
 from __future__ import annotations
@@ -54,8 +54,10 @@ def _probes(split: str):
         exs = from_items(factorial_probe_set(grid or ProbeGrid(), per_cell=per_cell, seed=PROBE_SEEDS[split],
                                              split=split))
         if limit is not None and limit < len(exs):
-            keep = sorted(random.Random(seed).sample(range(len(exs)), limit))
-            exs = [exs[i] for i in keep]
+            # the first `limit` entries of one seeded permutation: a smaller limit is always a subset of a larger
+            # one (the paper baseline answers a superset of every trained model's probes, configs/main.yaml)
+            perm = random.Random(seed).sample(range(len(exs)), len(exs))
+            exs = [exs[i] for i in sorted(perm[:limit])]
         return exs
     return loader
 
@@ -70,9 +72,9 @@ BUILTINS = [
     Benchmark("gsm_symbolic:p2", "GSM-Symbolic P2: two extra clauses per problem.", "external",
               _gsm_symbolic("p2"), size=GSM_SYMBOLIC_SIZES["p2"], version=2),
     Benchmark("probes_train_families", "Generated probe problems in the story styles used for training.",
-              "synthetic", _probes("train")),
+              "synthetic", _probes("train"), version=2),
     Benchmark("probes_heldout_families", "Generated probe problems in story styles never used for training.",
-              "synthetic", _probes("heldout")),
+              "synthetic", _probes("heldout"), version=2),
 ]
 for _b in BUILTINS:
     if _b.name not in _REGISTRY:

@@ -62,17 +62,19 @@ eval:
   # Evaluation sizes chosen by the user on 2026-10-07 to cut GPU time (was 3,683 problems per evaluation, ~2.5 h on
   # Qwen3-0.6B). The untrained model (baseline) answers 1,392 problems; every trained model answers 770 of them
   # (500 real test problems + 270 synthetic probes). Each post-training set is a subset of the baseline set, so
-  # before/after comparisons are paired on the same problems.
+  # before/after comparisons are paired on the same problems. A paper run reuses an earlier paper run's baseline and
+  # diagnosis of the same model when that baseline already covers every post-training problem with the same settings
+  # (dreammachine/jobs/requests.py `plan_paper_reuse`; user decision 2026-10-07).
   gsm8k_limit: 300            # first 300 GSM8K test problems after training (baseline: first 660)
   gsm_symbolic: [main]        # GSM-Symbolic p1/p2 dropped
   gsm_symbolic_limit: 200     # spread across templates (baseline: 300)
-  probe_per_cell: 1           # 216 problems per probe set (one per grid cell)
-  probe_limit: 135            # seeded random 135 of the 216 per probe set after training (baseline: all 216)
+  probe_per_cell: 2           # 432 generated problems per probe set (the same problems as the first 0.6B paper baseline)
+  probe_limit: 135            # seeded subset of 135 per probe set after training (baseline: 216, a superset)
   baseline_limits:
     gsm8k: 660
     "gsm_symbolic:main": 300
-    probes_train_families: null
-    probes_heldout_families: null
+    probes_train_families: 216
+    probes_heldout_families: 216
   load_in_4bit: false     # 1-2B models fit in bf16
 
 preflight:

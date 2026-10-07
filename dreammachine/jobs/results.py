@@ -142,7 +142,9 @@ def paper_eligibility(store: Store, job: dict, treat_compare_done: bool = False)
         return False, []
     warnings = []
     steps = store.get_steps(job["id"])
-    all_done = all(s["status"] == "done" or (treat_compare_done and s["stage"] == "compare") for s in steps)
+    # "skipped" = reused from an earlier paper run of the same model (requests.plan_paper_reuse)
+    all_done = all(s["status"] in ("done", "skipped") or (treat_compare_done and s["stage"] == "compare")
+                   for s in steps)
     overrides = set(job["request"] or {}) - PAPER_REQUEST_KEYS
     dirty = ((job.get("provenance") or {}).get("git") or {}).get("dirty")
     if dirty is not False:
