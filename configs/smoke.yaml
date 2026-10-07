@@ -1,0 +1,28 @@
+# Tiny end-to-end run to check your setup before the real experiment (~15-30 min on a 4060).
+name: smoke
+output_dir: runs/smoke
+db: runs/dreammachine.db
+candidates: [Qwen/Qwen3-0.6B]
+model: Qwen/Qwen3-0.6B
+
+generation: {max_new_tokens: 512, batch_size: 32, n_samples: 1, temperature: 0.0}  # measured, see docs/RUNNING.md
+screen: {gsm8k_limit: 50, probe_per_cell: 1, grid: {steps: [2, 4], digits: [1, 3], distractors: [0, 1], op_profiles: [addsub, mixed]}}
+diagnose:
+  probe_per_cell: 3
+  n_samples: 2
+  temperature: 0.7
+  bootstrap: 50
+  natural_pool: 1000
+  annotate: 20
+  grid: {steps: [2, 3, 4, 5], digits: [1, 2, 3], distractors: [0, 1], op_profiles: [addsub, mixed, muldiv]}
+data:
+  pool_size: 5000
+  natural_size: 2000
+  token_budget: 20000
+  ratios: [3]
+  main_ratio: 3
+train: {load_in_4bit: true, max_steps: 30, per_device_batch_size: 4, grad_accum: 1, save_steps: 1000}
+eval: {gsm8k_limit: 50, gsm_symbolic: [], probe_per_cell: 1, grid: {steps: [2, 4], digits: [1, 3], distractors: [0, 1], op_profiles: [addsub, mixed]}}
+seeds: [0]
+real_data: gsm8k
+prompt_version: qwen_boxed   # project prompt (PLAN.md D10, chosen 2026-10-05)

@@ -1,0 +1,66 @@
+# Explore preset (PLAN.md §6.1): the defaults behind an explore pipeline or benchmark run.
+# A copy of main.yaml with smaller, faster settings. EXPLORE RUNS ARE NEVER PAPER EVIDENCE.
+#
+# MEASURED in B8 (2026-10-05, Qwen3-0.6B, RTX 4060, benchmark_limit 50, 2 arms, 1 seed; docs/RUNNING.md §9):
+#   preflight 10 s · baseline 10 min · diagnose 60 min · build_data 30 s · train 29-34 min per arm ·
+#   evaluate 10-15 min per arm · whole pipeline ~2.6 h. Qwen3-1.7B is ~1.6x slower per generation step.
+# The settings themselves were not changed after B8 (one explore run is not enough to tune them).
+#
+# name / output_dir / db / model / seeds / benchmarks / limits are filled in per job by the job system.
+name: explore
+output_dir: runs/pipelines/explore
+db: runs/dreammachine.db
+model: Qwen/Qwen3-0.6B
+
+generation:
+  max_new_tokens: 512     # measured: 256 cut off 17.5% of answers
+  batch_size: 32          # sequences per batch; measured 1.8x faster than 16, 64 does not fit in 8 GB
+  n_samples: 1
+  temperature: 0.0
+
+diagnose:
+  probe_per_cell: 2       # 216 cells x 2 = 432 items, x3 samples = 1296 generations (measured: 60 min on 0.6B)
+  n_samples: 3
+  temperature: 0.7
+  bootstrap: 200
+  natural_pool: 5000
+  annotate: 50
+  seed: 0
+
+data:
+  pool_size: 20000        # grows automatically up to pool_max (default 4x) if the target's band is short (B8)
+  natural_size: 10000
+  token_budget: 200000    # whitespace tokens per arm (main.yaml: 600000)
+  ratios: [3]             # replaced by the request's single `ratio`
+  main_ratio: 3
+  p_band: [0.3, 0.7]
+
+train:
+  load_in_4bit: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  learning_rate: 0.0002
+  num_epochs: 2
+  per_device_batch_size: 4
+  grad_accum: 4
+  max_seq_len: 512
+  gradient_checkpointing: true
+  save_steps: 200
+
+eval:
+  benchmark_limit: 300    # problems per benchmark (null = full sets); the request may override (>= 10)
+  gsm_symbolic: [main]
+  probe_per_cell: 2
+  load_in_4bit: false     # 1-2B models fit in bf16; must equal for base and fine-tuned models
+
+preflight:
+  min_free_gb: 10         # B8 measured 107 MB per explore pipeline (2 adapters + data + logs): 10 GB is ample
+
+gpu:
+  required: true
+  memory_fraction: 0.92   # cap PyTorch below 8 GB so Windows cannot spill VRAM into system RAM (RUNNING.md §8)
+
+seeds: [0]
+real_data: gsm8k
+prompt_version: qwen_boxed   # project prompt (PLAN.md D10, chosen 2026-10-05)

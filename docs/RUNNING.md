@@ -1,0 +1,436 @@
+# Running the experiment on your GPU (RTX 4060 Laptop, 8 GB)
+
+## 0. One-time setup (native Windows, PowerShell)
+No WSL needed: torch (CUDA build) and bitsandbytes 4-bit both run natively on Windows.
+
+Install first: the NVIDIA driver, Git for Windows, Python 3.11 (python.org, tick "Add to PATH").
+Clone **outside OneDrive-synced folders** (sync tools can lock the SQLite files).
+
+```powershell
+git config --global core.longpaths true
+git clone https://github.com/yorudamn12/EL-MAIN C:\dev\EL-MAIN
+cd C:\dev\EL-MAIN
+git checkout claude/wonderful-hypatia-pqs6t9
+python -m venv .venv
+# If activation is blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+.\.venv\Scripts\Activate.ps1
+pip install torch --index-url https://download.pytorch.org/whl/cu128   # CUDA build of torch
+pip install -e ".[dev,api,ml]"
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+python -m pytest -q                                 # should all pass
+huggingface-cli login                               # only for the gated Llama / Gemma models
+```
+Never put Hugging Face tokens in configs or commits. Optional: set `HF_HOME` to a drive with ~20 GB free.
+
+Linux (bash) is the same with `python3 -m venv .venv && source .venv/bin/activate`.
+
+**Letting Claude drive the GPU directly:** open this folder in Claude Code on the laptop; that session can use the GPU.
+
+## 1a. One pipeline, one command (B4)
+Every stage from the baseline benchmark to the comparison, in the foreground (the worker for queued jobs comes in B5).
+Each job gets its own folder `runs/pipelines/<job id>/`. **Explore runs are never paper evidence.**
+```powershell
+python -m dreammachine.jobs run --preset explore --model Qwen/Qwen3-0.6B --limit 50
+python -m dreammachine.jobs run --kind benchmark_run --model Qwen/Qwen3-1.7B --limit 300          # baseline + diagnosis only
+python -m dreammachine.jobs run --preset explore --model Qwen/Qwen3-1.7B --target feature:n_carry --reuse-from <job id>
+python -m dreammachine.jobs run --preset paper --model Qwen/Qwen3-0.6B                             # the full protocol (days)
+```
+`--reuse-from` skips the baseline (and the diagnosis, if its settings match) of an earlier explore pipeline or benchmark
+run. Explore defaults: `configs/explore.yaml` (starting guesses until B8 measures them).
+
+**Queue + worker (B5)** — queue jobs, and let one worker run them in the background (one step per subprocess,
+so GPU memory is freed after every step):
+```powershell
+python -m dreammachine.jobs enqueue --preset explore --model Qwen/Qwen3-0.6B --limit 50
+python -m dreammachine.jobs.worker                  # keep this window open; Ctrl+C stops it (the running step fails
+                                                    # as "interrupted" and can be resumed)
+python -m dreammachine.jobs list
+python -m dreammachine.jobs show <job id>
+python -m dreammachine.jobs cancel <job id>         # stops at the next safe point; force-killed after 120 s
+python -m dreammachine.jobs resume <job id>         # failed/cancelled -> queued; finished steps are kept
+python -m dreammachine.jobs delete <job id>         # explore jobs only, not while queued/running
+```
+**Results (B6):** the last step writes `runs/pipelines/<job id>/results.json` (the API's `PipelineResults`) and a
+readable `report.md`: baseline, the primary result (targeted − matched control; "proposed" until the team confirms
+D8), each arm vs the untrained model with regressions, arm vs arm, change in η (negative = the feature hurts less),
+error-type shift, and provenance. Paper runs are flagged `paper_eligible` only if every step finished, nothing was
+overridden and the git working tree was clean when the run started — commit before starting a paper run.
+
+Logs: `runs/pipelines/<job id>/logs/job.log`; GPU readings every 30 s: `logs/gpu.csv` (temperature, SM clock, power,
+utilisation, memory), summarised per step. Only one worker can run at a time.
+
+## 1. Smoke run (proves your setup works end to end)
+```powershell
+python -m dreammachine.experiments.run screen     --config configs/smoke.yaml
+python -m dreammachine.experiments.run diagnose   --config configs/smoke.yaml
+python -m dreammachine.experiments.run build-data --config configs/smoke.yaml
+python -m dreammachine.experiments.run train      --config configs/smoke.yaml --arm targeted --ratio 3 --seed 0
+python -m dreammachine.experiments.run evaluate   --config configs/smoke.yaml --arm base
+python -m dreammachine.experiments.run evaluate   --config configs/smoke.yaml --arm targeted --ratio 3 --seed 0
+python -m dreammachine.experiments.run report     --config configs/smoke.yaml
+```
+
+## 2. Main experiment (`configs/main.yaml`)
+| Stage | Command | Rough cost on a 4060 | Human checkpoint |
+|---|---|---|---|
+| Screen | `run screen` | ~1–2 h for 4 models | Pick `model` from `runs/main/screen.json`, then CONFIRM it in COMPONENTS.md |
+| Diagnose | `run diagnose` | ~1–2 h | Annotate `runs/main/annotate_errors.csv` (2 people, blind), compute κ, CONFIRM the target factor |
+| Build data | `run build-data` | minutes (CPU) | Check `data/manifest.json`: equal tokens per arm, match KS small |
+| Train | `run train --all` | 18 trainings × ~30–60 min | — |
+| Evaluate | `run evaluate --arm base` then `run evaluate --all` | ~20–40 min per evaluation | — |
+| Report | `run report` | seconds | Read `runs/main/report.md` |
+
+`--all` = per seed `real_only_r0` + `untargeted_r3` + `matched_control_r3` + `targeted_r1/r3/r9` = 6, × 3 seeds = 18
+trainings and 18 evaluations (plus the base evaluation).
+Estimates are [Guessing]-grade until the smoke run gives real throughput numbers (section 6).
+
+**If you run out of memory:** lower `generation.batch_size` (inference), or lower
+`train.per_device_batch_size` to 2 and raise `grad_accum` to 8 (same effective batch).
+Training resumes from the last checkpoint if interrupted: rerun the same command.
+
+**4-bit:** `train.load_in_4bit: true` (QLoRA) needs bitsandbytes with CUDA. If it cannot run, the step stops
+with a clear error; there is no silent fallback. Models up to ~1.7B also fit in bf16 with `load_in_4bit: false`.
+
+## 3. The human-validation step (the 150 errors)
+1. Hide the `classifier_label` column. Two teammates fill `annotator_1` / `annotator_2`
+   independently, using the labels FORMAT_ERROR, ARITHMETIC_SLIP, DISTRACTOR_USE, PLAN_ERROR,
+   UNVERIFIABLE.
+2. Then compute agreement:
+```python
+import csv
+from dreammachine.diagnosis import cohen_kappa
+rows = list(csv.DictReader(open("runs/main/annotate_errors.csv", encoding="utf-8")))
+print("human-human", cohen_kappa([r["annotator_1"] for r in rows], [r["annotator_2"] for r in rows]))
+print("classifier-human", cohen_kappa([r["classifier_label"] for r in rows], [r["annotator_1"] for r in rows]))
+```
+κ ≥ 0.6 between the classifier and humans is the usual bar for "substantial" agreement.
+
+## 4. Offline datasets
+If Hugging Face is unreachable, export once elsewhere and point the config at the files:
+```yaml
+eval_data:
+  gsm8k_test: data/gsm8k_test.jsonl
+  gsm8k_train: data/gsm8k_train.jsonl
+  gsm_symbolic_p1: data/gsm_symbolic_p1.jsonl
+```
+(The format is `Example` rows: see `dreammachine.data.save_jsonl`.)
+
+## 5. API (B7) — what the frontend talks to
+```powershell
+python -m dreammachine.serve                    # API on http://127.0.0.1:8000/api/v1 + the worker; Ctrl+C stops both
+python -m dreammachine.serve --no-worker        # API only (run `python -m dreammachine.jobs.worker` yourself)
+# interactive docs: http://127.0.0.1:8000/docs
+python -m dreammachine.api.export_openapi       # after any route/shape change -> docs/openapi.json
+```
+The API is exactly `docs/API_CONTRACT.md` (version 0.2.0). It listens on 127.0.0.1 only and has no authentication:
+never expose it to a network. CORS allows the dev servers on ports 5173 and 3000 (override with
+`$env:DREAMMACHINE_CORS_ORIGINS = "http://localhost:5173,..."`).
+
+## 6. Measured numbers (RTX 4060 Laptop, 8 GB) — GPU-verified, B1 smoke run, 2026-10-04
+Setup: native Windows 11, Python 3.11.9, torch 2.11.0+cu128, transformers 5.18.0, peft 0.21.2,
+bitsandbytes 0.50.2, driver 581.29, on AC power, "Balanced" power plan. Model `Qwen/Qwen3-0.6B`, `configs/smoke.yaml`
+(eval in bf16, `max_new_tokens: 256`, `batch_size: 16`; training 4-bit QLoRA, batch 4, 30 steps).
+One measurement on one laptop: treat as a rough guide, not a benchmark.
+
+| Stage | Wall time | Model load | Work | Throughput | Peak VRAM (allocated / reserved) |
+|---|---|---|---|---|---|
+| screen (66 problems, greedy) | 200 s | 18.8 s | 177 s | 0.37 problems/s | 2.0 / 2.3 GB |
+| diagnose (216 probes × 2 samples, T=0.7) | 570 s | 15.5 s | 554 s | 0.39 problems/s = 0.78 answers/s | 2.9 / 3.3 GB |
+| build-data (CPU) | 12 s | — | — | — | — |
+| train targeted_r3_s0 (4-bit QLoRA, 30 steps) | 80 s | ~25 s (load + tokenise + save) | 54.6 s | **1.82 s/step**, 2.2 samples/s | 4.0 / 6.7 GB |
+| evaluate base (82 problems) | 242 s | 13.9 s | 223 s | 0.35–0.42 problems/s | 2.0 / 2.3 GB |
+| evaluate targeted (base + LoRA adapter) | 338 s | 19.3 s | 309 s | 0.22–0.54 problems/s | 2.0 / 2.4 GB |
+| report | < 5 s | — | — | — | — |
+
+- **Whole smoke run:** ~24 min. Disk: 109 MB under `runs/smoke/` (adapter 49.5 MB, `checkpoint-30` 58.6 MB,
+  data 0.4 MB) + 0.7 MB SQLite. Device memory seen by `nvidia-smi` peaked at 7.5 GB of 8 GB (during training, incl.
+  other processes).
+- **Thermals:** max GPU temperature 62 °C; SM clock while busy min 210 / mean 1193 / max 2655 MHz; mean power 19.5 W
+  (max 54 W). No HW thermal or power-brake slowdown was recorded.
+- **Inference is CPU-bound, not GPU-bound:** mean GPU utilisation while generating was only ~34 %. With a 0.6B model,
+  Hugging Face `generate` spends most of each token step in Python/kernel-launch overhead, so larger
+  `generation.batch_size` (e.g. 32–64) should raise throughput almost linearly at small VRAM cost — not yet measured.
+- **Token limit and batch size (measured after B1, dev slice = last 200 GSM8K *train* items, Qwen3-0.6B, dm_v1,
+  greedy, bf16):**
+
+  | max_new_tokens | batch_size | accuracy | answers cut off | problems/s | peak VRAM |
+  |---|---|---|---|---|---|
+  | 256 | 16 | 0.495 | 17.5 % | 0.40 | 2.0 GB |
+  | 512 | 16 | 0.560 | 0.5 % | 0.29 | 2.4 GB |
+  | **512** | **32** | **0.565** | **0 %** | **0.52** | 3.5 GB |
+
+  The configs now use 512 / 32. `batch_size` counts generated sequences (questions × `n_samples`), so the
+  diagnose stage (2–3 samples per question) stays within the same memory. Each answer records `truncated`
+  (hit the token limit); evaluation metrics include `<benchmark>:truncated_share`.
+- **Batch 64 does not fit:** at 512 tokens it filled 7.75 of 8.19 GB and was still unfinished after 26 min
+  (batch 32: 6.5 min). See "GPU memory spill" below.
+- **Extrapolation (a guess, not measured):** at ~0.4 problems/s, the full GSM8K test (1319) takes ~55 min per model
+  evaluation at 256 new tokens, longer at 700.
+- Smoke config gap: the eval grid has `steps ∈ {2, 4}`, so with the smoke target `steps` (threshold 4.0) the
+  "above threshold" slice is empty (`accuracy: null`). Plumbing only; the main config's grid covers it.
+
+## 7. Accuracy exploration: models, prompts, decoding — GPU-verified, EXPLORE ONLY (2026-10-04/05)
+**Not paper evidence.** Run with throwaway scripts (kept in `runs/dev_explore/`, git-ignored), no provenance.
+For the paper's settings-selection table, re-run through the benchmark module (B2/B8) with provenance.
+
+Dev set: the last 200 GSM8K **train** problems (never GSM8K test). Scored with the repo's own
+`classify` / `extract_answer`. bf16, RTX 4060 Laptop, native Windows. "Boxed" = the prompt recommended in the
+Qwen3 model card (Best Practices): *"Please reason step by step, and put your final answer within \boxed{}."*
+appended to the question in the user turn. Thinking mode uses the model card's sampling (T=0.6, top-p 0.95,
+top-k 20; greedy is discouraged there). Majority vote = 5 samples at T=0.7, top-p 0.8, top-k 20.
+
+| Model | Prompt | Decoding | Accuracy | Cut off | Mean tokens | Time / 200 |
+|---|---|---|---|---|---|---|
+| Qwen3-0.6B | dm_v1 | greedy, 512 tok | 0.565 | 0 % | 191 | 6 min |
+| Qwen3-0.6B | **boxed** | greedy, 512 tok | **0.705** | 2 % | 254 | 8 min |
+| Qwen3-0.6B | dm_v1 | thinking, 2048 tok | 0.590 | 14 % | 934 | 120 min |
+| Qwen3-0.6B | boxed | thinking, 2048 tok | 0.720 | 27.5 % | 1325 | 129 min |
+| Qwen3-0.6B | dm_v1 | majority of 5, 512 tok | 0.635 | 0.5 % | 193 | 37 min |
+| Qwen3-1.7B | dm_v1 | greedy, 512 tok | 0.790 | 1.5 % | 242 | 11 min |
+| Qwen3-1.7B | **boxed** | greedy, 512 tok | **0.860** | 2.5 % | 293 | 13 min |
+| Qwen3-1.7B | dm_v1 | thinking, 2048 tok | 0.840 | 16 % | 1031 | 224 min |
+| Qwen3-1.7B | boxed | thinking, 2048 tok | 0.785 | 31.5 % | 1540 | 266 min |
+| Qwen3-1.7B | dm_v1 | majority of 5, 512 tok | 0.840 | 2 % | 241 | 67 min |
+
+Paired bootstrap on the same 200 problems (difference, 95% CI):
+- boxed − dm_v1 (greedy): 0.6B **+0.140** [+0.075, +0.205]; 1.7B **+0.070** [+0.015, +0.125].
+- 1.7B − 0.6B (greedy): dm_v1 +0.225 [+0.155, +0.295]; boxed +0.155 [+0.090, +0.225].
+- thinking − greedy: 0.6B dm_v1 +0.025 [−0.055, +0.105]; 0.6B boxed +0.015 [−0.055, +0.085];
+  1.7B dm_v1 +0.050 [−0.015, +0.115]; 1.7B boxed **−0.075** [−0.135, −0.015] (31.5 % of answers hit the limit).
+- majority-of-5 − greedy (dm_v1): 0.6B +0.070 [+0.015, +0.125]; 1.7B +0.050 [+0.015, +0.085].
+- boxed greedy − dm_v1 majority-of-5: 0.6B +0.070 [+0.005, +0.135]; 1.7B +0.020 [−0.030, +0.070].
+
+Reading (for the team to decide; nothing in the configs was changed for this):
+- **The boxed prompt is the biggest cheap gain** on both models, at ~1.2–1.3× the time of dm_v1.
+- **Thinking mode is not worth it here:** no significant gain anywhere, a loss on 1.7B + boxed, ~15–20× the
+  time, and the error classifier cannot see the stripped thinking text.
+- **Majority voting helps dm_v1 but costs 5×**, and boxed greedy is as good or better.
+- Switching the project prompt to "boxed" is a D10 decision: training completions would then end with
+  `\boxed{n}` instead of `#### n`, and dm_v1's request to write every calculation as an equation (which the
+  error classifier relies on) would be gone. UNVERIFIABLE shares did not rise with boxed in these runs.
+- Model choice (open question 3): 1.7B is more accurate but leaves fewer errors to diagnose and fix.
+
+## 8. GPU memory spill on Windows (measured)
+When a batch needs more than the 8 GB of dedicated VRAM, Windows does **not** raise out-of-memory: it moves the
+overflow into shared system RAM and the run becomes many times slower (seen: thinking mode, Qwen3-0.6B, batch 16,
+2048 tokens → 4.3 GB in shared memory, no result after ~2 h; batch 64 at 512 tokens likewise). Check with
+`Get-Counter '\GPU Process Memory(*)\Shared Usage'`. Remedies used here: smaller batches (thinking: 0.6B batch 8,
+1.7B batch 4, both stayed in VRAM) and `torch.cuda.set_per_process_memory_fraction(0.92)` so an oversized batch
+fails with a clear OOM instead. Proposed for B4/B5: the same cap in step subprocesses, so a pipeline step fails fast
+rather than crawling. (Alternative: NVIDIA Control Panel → "CUDA - Sysmem Fallback Policy" → "Prefer No Sysmem
+Fallback"; a system setting for the user.)
+
+## 9. B8: first real end-to-end pipeline — GPU-verified, EXPLORE (not paper evidence), 2026-10-05
+Started through the API (`POST /api/v1/pipelines`), run by the worker, read back through the API.
+Qwen3-0.6B, project prompt `qwen_boxed`, `benchmark_limit` 50, arms targeted + matched_control at ratio 3, seed 0,
+explore preset (`configs/explore.yaml`). Job `5a584e16390b`.
+
+| Step | Time | Notes |
+|---|---|---|
+| preflight | 10 s | |
+| baseline | 10 min | 4 benchmarks x 50; 15 s of it model loading |
+| diagnose | 60 min | 432 probes x 3 samples; max 73 °C |
+| choose_target | <1 s | auto -> `steps` (threshold 4.0) |
+| build_data | 30 s | failed once, fixed, resumed (below) |
+| train matched_control / targeted | 34 / 29 min | 314 / 262 steps, ~6.6 s/step |
+| evaluate matched_control / targeted | 10 / 15 min | |
+| **whole pipeline** | **~2.6 h** + 4 min lost to the build_data failure | output folder 107 MB |
+
+Diagnosis (432 items x 3): significant weaknesses `steps` (η +0.53), `n_div` (+1.29), `n_mul` (+0.39); not
+significant: `log10_max`, `n_distractors`, `n_carry`. McFadden R² 0.26.
+
+Results (50 problems per benchmark, ONE seed — far too small to conclude anything):
+
+| | GSM8K | probes train families | probes held-out families | η change `steps` |
+|---|---|---|---|---|
+| untrained | 0.62 | 0.38 | 0.32 | — |
+| matched_control | 0.30 (regression) | 0.76 | 0.68 | −0.28 |
+| targeted | 0.36 (regression) | 0.66 | 0.60 | −1.19 |
+| targeted − matched (primary) | +0.06 [−0.06, +0.18] | −0.10 [−0.24, +0.04] | −0.08 [−0.22, +0.06] | |
+
+**Found by this run and fixed (B8):**
+1. **Matched control could not fill the equal token budget.** It takes one item per targeted item, but with target
+   `steps` its items are much shorter (70 vs 118 whitespace tokens), so it had 127,945 of 150,000 synthetic tokens.
+   Fix: the number of items to select is sized by the shorter side's mean length (`synthetic_need`), and the
+   candidate pool grows deterministically up to `data.pool_max` (default 4x `pool_size`) when the difficulty band is
+   short; a still-impossible budget fails with an actionable message. Matching itself (1:1, nearest predicted logit)
+   is unchanged. After the fix both arms reached 199.9k of 200k tokens; 2,772 of 2,772 targeted items were matched
+   (mean |Δlogit| 0.01, KS 0.042, p = 0.014 — very close, but with this many items even a small difference is
+   detectable: relevant to open question 2, match-quality thresholds).
+2. **GSM-Symbolic limits covered only a few templates.** The dataset groups its rows by template (~50 instances
+   each), so the first 50 rows were 50 copies of ONE problem (gold answer always 20) and `main.yaml`'s first 500 were
+   10 of 100 templates. Fix: a limit now takes instances round-robin across templates (50 -> 50 templates; 500 -> all
+   100 x 5); the benchmark version is now 2 and is part of the baseline hash, so old baselines are not reused.
+   **The GSM-Symbolic numbers of this run are invalid** (and the targeted arm was evaluated after the fix, so its
+   GSM-Symbolic set differs from the baseline's).
+
+**For the team (not fixed — a research decision):** both trained arms got significantly WORSE on GSM8K (−0.26 and
+−0.32, whole CI below 0), as in the B1 smoke run. After training, the model writes short GSM8K-style solutions
+(the training completions' style) and makes more plan errors. Options to test on the dev set before a paper run:
+lower learning rate (2e-4 now) or 1 epoch; more real data (lower ratio); keeping the model's own solution style
+(self-distillation — LLM-written data, needs the team's explicit OK). The arm-vs-arm comparison is still valid
+(all arms share the setup), but a regression on GSM8K weakens the paper's story.
+
+### Prompt comparison (PLAN.md §8.5) — GPU-verified, B8
+Same 200 problems (the GSM8K-**train** dev slice, items 7273-7472; GSM8K test stays untouched), 700 new tokens, greedy,
+bf16, the same settings for every prompt (batch 32 for 0.6B, 16 for 1.7B). Shares are of all 200 answers.
+`python -m dreammachine.benchmarks run ... --benchmark jsonl:runs/b8/dev200.jsonl --prompt-version <v> --max-new-tokens 700`
+
+| Model | Prompt | Accuracy | FORMAT_ERROR | UNVERIFIABLE | format_ok | Cut off |
+|---|---|---|---|---|---|---|
+| Qwen3-0.6B | dm_v1 | 0.565 | 0.5 % | 13.5 % | 1.5 % | 0 % |
+| Qwen3-0.6B | v2_700 | 0.360 | 0.5 % | 42.0 % | 2.5 % | 0 % |
+| Qwen3-0.6B | **qwen_boxed** | **0.705** | 0.0 % | 11.0 % | 0.0 % | 0 % |
+| Qwen3-1.7B | dm_v1 | 0.790 | 1.0 % | 3.5 % | 20.5 % | 0 % |
+| Qwen3-1.7B | v2_700 | 0.775 | 1.0 % | 4.0 % | 11.5 % | 0 % |
+| Qwen3-1.7B | **qwen_boxed** | **0.860** | 0.5 % | 2.5 % | 0.0 % | 0.5 % |
+
+Paired (same problems): qwen_boxed − dm_v1 = +0.140 [+0.075, +0.205] (0.6B), +0.070 [+0.015, +0.125] (1.7B);
+qwen_boxed − v2_700 = +0.345 [+0.265, +0.425] (0.6B), +0.085 [+0.035, +0.140] (1.7B).
+Reading: the project prompt (D10) is best on both models and has the fewest UNVERIFIABLE errors, so the error
+classifier keeps finding equations to check. v2_700 asks for no written work: on 0.6B, 42 % of answers become
+UNVERIFIABLE and accuracy falls to 0.36. `format_ok` (a bare final number) stays low for every prompt; with
+qwen_boxed it is 0 by design (the answer is in `\boxed{}`, which `extract_answer` reads). 700 tokens cut off at most
+0.5 % of answers, and 0.6B accuracies equal the 512-token dev runs exactly (§7), so 512 tokens stays the setting.
+
+## 10. Dev-set tuning of the training settings — GPU-verified, EXPLORE (not paper evidence), 2026-10-06
+`python -m dreammachine.experiments.tune --config configs/tune.yaml` (PLAN.md §14 question 7). Qwen3-0.6B, project
+prompt, B8 diagnosis (target `steps`, threshold 4.0), token budget 200k, one seed. Dev set = the last 200 GSM8K
+**train** problems, removed from the training data (`data.dev_holdout: 200`); GSM8K test was not used. Plus 100
+held-out probe problems. Each variant took ~29 min to train (1 epoch: 15 min) and ~10 min to evaluate.
+
+| Variant | GSM8K dev (base 0.705) | Δ vs base [95% CI] | held-out probes (base 0.31) | target slice above (base 0.10) | answer length (base 748 chars) |
+|---|---|---|---|---|---|
+| targeted, lr 2e-4, 2 epochs, ratio 3 (B8 settings) | 0.480 | −0.225 [−0.300, −0.150] | 0.53 (+0.22) | 0.43 | 325 |
+| targeted, lr 5e-5 | 0.470 | −0.235 [−0.315, −0.155] | 0.56 (+0.25) | 0.45 | 306 |
+| targeted, lr 1e-4, 1 epoch | 0.465 | −0.240 [−0.320, −0.165] | 0.50 (+0.19) | 0.41 | 317 |
+| targeted, ratio 1 (more real data) | 0.505 | −0.200 [−0.275, −0.125] | 0.54 (+0.23) | 0.53 | 300 |
+| **real_only** (no synthetic data) | 0.480 | −0.225 [−0.295, −0.155] | 0.17 (−0.14) | 0.08 | 305 |
+
+**Findings**
+1. **The GSM8K regression is not a hyper-parameter problem.** Learning rate (4x lower), half the epochs and more real
+   data all stay at −0.20 to −0.24 (overlapping CIs).
+2. **It is not caused by the synthetic data:** training on real GSM8K problems only regresses just as much.
+3. **The cause is the completion style.** Every fine-tuned model writes answers ~2.4x shorter (≈300 vs 748 chars),
+   copying the terse style of the training solutions (GSM8K's reference solutions and our code-written ones), and
+   loses part of its own step-by-step reasoning. (Side effect: far fewer UNVERIFIABLE errors — trained models write
+   equations — 0.37 → ~0.10-0.18 of wrong answers.)
+4. **The synthetic data does what it should:** every targeted variant gains +0.19 to +0.25 on held-out probes, and
+   the target slice (problems with more than 4 steps) goes from 0.10 to 0.41-0.53; real data alone hurts the probes.
+
+**What would address it (a decision for the team — not done):**
+- (a) **Self-distillation for the solution text:** keep the problems, answers and features made by code, but train on
+  the base model's own correct, verified solutions (rejection sampling: generate, keep only answers that match the
+  gold and whose equations check out) instead of the terse reference text. This keeps the model's style. The
+  solution text is then model-written, so it needs the team's explicit OK (PLAN.md §2.3, D2).
+- (b) Make the code-written solutions longer and closer to the model's own style (stays fully "made by code"; may
+  only partly help, since the real GSM8K solutions would still be terse).
+- (c) Accept it: all arms share the regression, so arm-vs-arm comparisons stay fair — but a paper that lowers GSM8K
+  accuracy is weaker, and reviewers will ask.
+- Among the tested settings, ratio 1 regressed least and moved the target slice most, but the differences are within
+  noise; no config was changed.
+
+## 11. Self-distilled solution texts (option a, PLAN.md D14) — GPU-verified, EXPLORE (not paper evidence), 2026-10-06
+```powershell
+$env:HF_HUB_OFFLINE = "1"; $env:HF_DATASETS_OFFLINE = "1"
+python -m dreammachine.experiments.tune --config configs/tune_distill.yaml
+```
+Qwen3-0.6B, same dev set (200 GSM8K-train problems held out), 100 held-out probes and B8 diagnosis as §10; one seed.
+Both variants: targeted arm, ratio 3, **100k-token budget**, lr 2e-4, 2 epochs, max_seq_len 768. The only difference is
+the solution text. Distillation (`dreammachine/data/distill.py`): 2 samples per item, temperature 0.7, top-p 0.8,
+512 new tokens, qwen_boxed prompt; a sample is kept only if its final answer equals the code-made gold answer, it
+writes at least one equation, every equation is correct, and it was not cut off; otherwise the original text stays.
+Output: `runs/tuning/qwen06_distill/` (`summary.md`, `results/`, the arm's `.original.jsonl` / `.distill.json`).
+
+**Distillation:** 768 of 1,037 rows distilled before the budget was full (stops early), 58 min. Accepted 381/768 =
+50% (synthetic 270/588 = 46%, real 111/180 = 62%). Final arm: 705 items, of which 352 have model-written text =
+**65% of the tokens** (synthetic 251 of 540 items, real 101 of 165). The rest keep the terse original text.
+
+| Variant (100k tokens) | GSM8K dev (base 0.705) | Δ vs base [95% CI] | held-out probes (base 0.31) | Δ probes [95% CI] | target slice above (base 0.10) | answer length (base 748) | train |
+|---|---|---|---|---|---|---|---|
+| **distilled** | **0.590** | **−0.115 [−0.180, −0.050]** | 0.41 | +0.10 [+0.02, +0.19] | 0.27 | 599 chars | 10 min |
+| undistilled (control) | 0.465 | −0.240 [−0.315, −0.170] | 0.57 | +0.26 [+0.15, +0.37] | 0.49 | 307 chars | 14 min |
+
+**Findings**
+1. **Distillation halves the GSM8K regression** (−0.24 → −0.115) but does not remove it: the CI is still below 0.
+   Answers stay longer (599 vs 307 chars), confirming that style is the cause.
+2. **It also halves the targeted gain:** probes +0.26 → +0.10, target slice 0.49 → 0.27.
+3. Likely reason for both: **selection bias of rejection sampling.** Only items the model can already solve get a
+   model-written solution; 54% of the synthetic items — the hardest, i.e. the targeted ones — keep the terse code text.
+   So the model learns its own style from easy items and the terse style from the hard ones, and the hard items carry
+   less of the training signal. 35% of the tokens are still terse.
+4. The 100k-token undistilled control matches the 200k §10 result (−0.24 / +0.26), so halving the budget changes
+   nothing for the undistilled arm.
+
+**Options (team decision — nothing changed in the paper configs):**
+- (a2) More samples for the hard items (e.g. 4-8): raises acceptance on hard synthetic items; distilling costs ~2-4x.
+- (a3) "Rationalisation" (STaR): for items the model fails, show it the gold answer and ask for a solution; still
+  checked equation by equation. More model-written text — needs an explicit OK.
+- (b) Code-written solutions in a longer, model-like style (stays fully D2): every item gets the same style,
+  no selection bias; may lose some of the model's own phrasing.
+- (c) Accept the regression (all arms share it).
+
+## 12. Longer code-written solutions (option b) — GPU-verified, EXPLORE (not paper evidence), 2026-10-06
+```powershell
+python -m dreammachine.experiments.tune --config configs/tune_style.yaml
+```
+Same setup as §11 (Qwen3-0.6B, targeted arm, ratio 3, 100k tokens, max_seq_len 768, one seed; same output folder, so
+`runs/tuning/qwen06_distill/summary.md` holds all three). `data.solution_style: steps` (`dreammachine/data/style.py`)
+rewrites every training solution, real and synthetic, by code: "Let's solve this step by step." / "We need to find:
+<question>" / one `**Step k: <quoted problem sentence>**` + the original line per step / "So the answer is n." /
+`#### n`. Equations and answers unchanged. Training solutions ~545 chars (before: synthetic 167, GSM8K 257).
+
+| Variant (100k tokens) | GSM8K dev (base 0.705) | Δ vs base [95% CI] | dev answers cut off at 512 tokens (base 0.02) | held-out probes (base 0.31) | target slice (base 0.10) | answer length |
+|---|---|---|---|---|---|---|
+| distilled (§11) | 0.590 | −0.115 [−0.180, −0.050] | 0.07 | 0.41 (+0.10) | 0.27 | 599 |
+| undistilled (§11) | 0.465 | −0.240 [−0.315, −0.170] | 0.035 | 0.57 (+0.26) | 0.49 | 307 |
+| **steps style** | **0.425** | **−0.280 [−0.360, −0.200]** | **0.185** | 0.50 (+0.19) | 0.39 | 728 |
+
+**Findings**
+1. **Option b in this form is worse than the terse control** on GSM8K dev (CIs overlap: not clearly worse, but
+   clearly not better), and keeps most of the probe gain.
+2. **Cause: the rigid template makes the 0.6B model loop.** 18.5% of dev answers run into the 512-token limit (base
+   2%). Inspected on the GPU (9 of the first 32 wrong dev answers were cut off): the model repeats
+   `**Step k: <same sentence>**` + the same equation until the limit, or forces a GSM8K problem into the
+   quote-then-compute pattern (e.g. "Oliver has 40 + 200 = 240 quarters" for "$40 and 200 quarters").
+3. **Length is not what matters; the model's own reasoning is.** The steps style is as long as the base model's
+   answers (728 vs 748 chars) yet regresses most; the only variant that reduced the regression is the one whose
+   text the model wrote itself (§11).
+
+The code stays (`solution_style` defaults to `terse`, so all other data is unchanged), but this style is not
+recommended. Remaining options: more samples / rationalisation for distillation (a2/a3, needs an explicit OK for
+more model-written text), or accept the regression (c).
+
+## 13. Self-distillation with more tries (option a2) — GPU-verified, EXPLORE (not paper evidence), 2026-10-06
+```powershell
+python -m dreammachine.experiments.tune --config configs/tune_distill8.yaml
+```
+Same setup as §11; every item gets 2 answers, an item with none accepted gets 6 more (other seed): up to 8 tries.
+Distillation took 137 min (704 rows until the budget was full). Accepted 531/704 = 75% (synthetic 392/536 = 73%,
+was 46% with 2 tries; real 139/168 = 83%); 179 of the 352 retried items were rescued by the retry. Final arm: 605
+items, **85% of the tokens model-written** (§11: 65%).
+
+| Variant (100k tokens) | items | model-written tokens | GSM8K dev (base 0.705) | Δ vs base [95% CI] | held-out probes (base 0.31) | Δ probes [95% CI] | target slice (base 0.10) | answer length |
+|---|---|---|---|---|---|---|---|---|
+| undistilled (§11) | 1037 | 0% | 0.465 | −0.240 [−0.315, −0.170] | 0.57 | +0.26 [+0.15, +0.37] | 0.49 | 307 |
+| steps style (§12) | 612 | 0% | 0.425 | −0.280 [−0.360, −0.200] | 0.50 | +0.19 [+0.08, +0.30] | 0.39 | 728 |
+| distilled, 2 tries (§11) | 705 | 65% | 0.590 | −0.115 [−0.180, −0.050] | 0.41 | +0.10 [+0.02, +0.19] | 0.27 | 599 |
+| **distilled, up to 8 tries** | 605 | 85% | **0.625** | **−0.080 [−0.145, −0.015]** | 0.39 | +0.08 [−0.01, +0.17] | 0.16 | 718 |
+
+**Findings**
+1. **More model-written text → less GSM8K loss, but also less targeted gain.** It is a clear trade-off across the
+   three text variants: 0% / 65% / 85% model-written tokens give −0.24 / −0.115 / −0.08 on GSM8K dev and +0.26 /
+   +0.10 / +0.08 on the probes (target slice 0.49 / 0.27 / 0.16). At 85% the probe gain is no longer significant.
+2. **Why the gain shrinks** (two causes, not separated by this test):
+   - training on answers the model already gets right teaches it little new — the targeted gain came from imitating
+     the code-written solutions of problems it could *not* solve;
+   - at an equal token budget, longer solutions mean fewer problems: 605 vs 1037 items.
+3. Part of the undistilled probe gain may be learning the probe problems' *format* (they are code-generated like the
+   training data), not only the skill; the GSM8K regression and the probe gain come from the same imitation.
+4. No variant removes the regression: the smallest is still −0.08 with the CI below 0 (one seed, 200 problems).
+
+**Recommendation (team decision; no paper config changed):** keep the code-written (terse) solutions for the paper
+runs — D2 stays fully intact and the targeting signal is largest, which is what the paper compares (targeted vs
+matched_control, both trained the same way, so the shared GSM8K cost does not bias that comparison). Report the
+GSM8K regression as a stated cost, with this dev study (§10-13) as the evidence that it comes from the solution style
+and that self-distillation trades it against the targeted gain. Self-distillation can be reported as an ablation.

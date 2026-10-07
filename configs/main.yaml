@@ -1,0 +1,89 @@
+# Main experiment config, sized for an RTX 4060 Laptop GPU (8 GB VRAM).
+# Run the stages in order; see docs/RUNNING.md.
+name: main
+output_dir: runs/main
+db: runs/dreammachine.db
+
+# Stage 1 screens these. Put the recommended one (screen.json) in `model` below
+# and record the choice in docs/COMPONENTS.md.
+candidates:
+  - Qwen/Qwen3-0.6B
+  - Qwen/Qwen3-1.7B
+  - meta-llama/Llama-3.2-1B-Instruct   # gated: accept the licence on Hugging Face first
+  - google/gemma-3-1b-it               # gated: accept the licence on Hugging Face first
+  - Qwen/Qwen2.5-1.5B-Instruct         # the friend's Colab model (prompt v2_700)
+model: Qwen/Qwen3-1.7B                  # placeholder until screening is done
+
+generation:
+  # Measured on Qwen3-0.6B, RTX 4060, dev slice of 200 GSM8K-train items (2026-10-04):
+  # 256 tokens cut off 17.5% of answers (acc 0.495); 512 tokens cut off 0.5-0% (acc 0.56).
+  max_new_tokens: 512
+  batch_size: 32          # sequences per batch (questions x n_samples); 1.8x faster than 16. Lower if OOM.
+  n_samples: 1
+  temperature: 0.0
+
+screen:
+  gsm8k_limit: 500
+  probe_per_cell: 1
+  min_accuracy: 0.25
+  max_format_share: 0.2
+
+diagnose:
+  probe_per_cell: 4       # 216 cells x 4 = 864 items, x3 samples = 2592 generations
+  n_samples: 3
+  temperature: 0.7
+  bootstrap: 500
+  natural_pool: 5000
+  annotate: 150
+  seed: 0
+
+data:
+  pool_size: 40000
+  natural_size: 20000
+  token_budget: 600000    # whitespace tokens per arm (~ GSM8K train is ~1.1M)
+  ratios: [3, 9]          # synthetic:real, targeted arm only; 1:1 removed by the user 2026-10-07 (GPU time)
+  main_ratio: 3
+  p_band: [0.3, 0.7]
+
+train:
+  load_in_4bit: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  learning_rate: 0.0002
+  num_epochs: 2
+  per_device_batch_size: 4
+  grad_accum: 4
+  max_seq_len: 512
+  gradient_checkpointing: true
+  save_steps: 200
+
+eval:
+  # Evaluation sizes chosen by the user on 2026-10-07 to cut GPU time (was 3,683 problems per evaluation, ~2.5 h on
+  # Qwen3-0.6B). The untrained model (baseline) answers 1,392 problems; every trained model answers 770 of them
+  # (500 real test problems + 270 synthetic probes). Each post-training set is a subset of the baseline set, so
+  # before/after comparisons are paired on the same problems. A paper run reuses an earlier paper run's baseline and
+  # diagnosis of the same model when that baseline already covers every post-training problem with the same settings
+  # (dreammachine/jobs/requests.py `plan_paper_reuse`; user decision 2026-10-07).
+  gsm8k_limit: 300            # first 300 GSM8K test problems after training (baseline: first 660)
+  gsm_symbolic: [main]        # GSM-Symbolic p1/p2 dropped
+  gsm_symbolic_limit: 200     # spread across templates (baseline: 300)
+  probe_per_cell: 2           # 432 generated problems per probe set (the same problems as the first 0.6B paper baseline)
+  probe_limit: 135            # seeded subset of 135 per probe set after training (baseline: 216, a superset)
+  baseline_limits:
+    gsm8k: 660
+    "gsm_symbolic:main": 300
+    probes_train_families: 216
+    probes_heldout_families: 216
+  load_in_4bit: false     # 1-2B models fit in bf16
+
+preflight:
+  min_free_gb: 10         # starting guess (PLAN.md S0); adjust after B8 measures run sizes
+
+gpu:
+  required: true
+  memory_fraction: 0.92   # VRAM cap per step so Windows cannot spill into system RAM (RUNNING.md §8)
+
+seeds: [0, 1, 2]
+real_data: gsm8k
+prompt_version: qwen_boxed   # project prompt (PLAN.md D10, chosen 2026-10-05)

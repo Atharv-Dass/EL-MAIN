@@ -1,0 +1,29 @@
+# Models the user may pick (GET /api/v1/models; preflight checks the id is listed here).
+# params_b is approximate (billions). Gated models need `huggingface-cli login` and an accepted licence.
+# Research models (PLAN.md D12): Qwen3-0.6B and Qwen3-1.7B.
+models:
+  - id: Qwen/Qwen3-0.6B
+    display_name: Qwen3 0.6B
+    params_b: 0.6
+    gated: false
+    notes: "Research model (D12). Thinking mode is turned off by the prompt code."
+  - id: Qwen/Qwen3-1.7B
+    display_name: Qwen3 1.7B
+    params_b: 1.7
+    gated: false
+    notes: "Research model (D12). Thinking mode is turned off by the prompt code."
+  - id: meta-llama/Llama-3.2-1B-Instruct
+    display_name: Llama 3.2 1B Instruct
+    params_b: 1.2
+    gated: true
+    notes: null
+  - id: google/gemma-3-1b-it
+    display_name: Gemma 3 1B IT
+    params_b: 1.0
+    gated: true
+    notes: null
+  - id: Qwen/Qwen2.5-1.5B-Instruct
+    display_name: Qwen2.5 1.5B Instruct
+    params_b: 1.5
+    gated: false
+    notes: "The model of the friend's Colab benchmark (prompt v2_700)."
