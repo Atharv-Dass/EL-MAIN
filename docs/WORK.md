@@ -113,6 +113,31 @@ The 1.7B time is a guess until its first training is measured. Results will appe
 `runs/pipelines/<job>/results.json` and `report.md`. Worker log: `runs/paper_worker.log`.
 **While these run, no file in the repo is changed** — a changed file would make the run "not paper-eligible".
 
+### 5.4 How the diagnosis (and everything else) is saved on this laptop
+Yes — when a model is weak at, for example, multi-step problems, that is written down, in three places:
+
+1. **The job's own folder** `runs/pipelines/<job id>/` (one folder per run):
+
+   | File / folder | What is in it |
+   |---|---|
+   | `diagnosis.json` | Every weakness found: its name (e.g. `steps`), how much it hurts (`eta`, `effect`), the 95% confidence interval, whether it is significant, and the ids of the 864 problems used |
+   | `target.json` | The one weakness chosen for training, e.g. `{"feature": "steps", "threshold": 4.0}` = "problems with more than 4 steps" |
+   | `annotate_errors.csv` | A sample of wrong answers for a human to label (checks the automatic error labels) |
+   | `data/` | The training data built from the target, one file per arm and seed |
+   | `adapters/` | The trained models |
+   | `evals/` | Accuracy after each training (and the baseline) |
+   | `logs/` | Step logs and GPU temperatures |
+
+2. **The results database** `runs/dreammachine.db`: every single answer of every run (question, model answer,
+   right/wrong, error type, the problem's properties). The diagnosis is a run of kind `diagnose`.
+
+3. **`docs/weakness.md`**: the same weaknesses written for humans (accuracy tables, plain words), one section per
+   model. Updated by Claude after each model's diagnosis and again after training.
+
+Where to look now: Qwen3-0.6B → `runs/pipelines/04f319d1cca7/` (diagnosis made there, reused by
+`80b37628b193`); Qwen3-1.7B → `runs/pipelines/409305f3e2f2/` once its diagnosis has run.
+**`runs/` is not in git** (too big; it stays only on this laptop) — copy it somewhere safe after the runs.
+
 ---
 
 ## 6. Next steps
@@ -120,7 +145,9 @@ The 1.7B time is a guess until its first training is measured. Results will appe
 **Claude (after the runs):**
 1. Watch the runs; resume any step that fails.
 2. Update the 1.7B time estimate after its first training.
-3. When both finish: summarise the results (headline: targeted − matched control; the weakness slice; the
+3. After the 1.7B diagnosis (around Oct 8 evening): fill in its section of `docs/weakness.md`. After each run
+   finishes: add "did training fix the weakness?" to `docs/weakness.md`.
+4. When both finish: summarise the results (headline: targeted − matched control; the weakness slice; the
    GSM8K cost), update `docs/RUNNING.md` and `docs/COMPONENTS.md`, commit.
 
 **You / the team:**
