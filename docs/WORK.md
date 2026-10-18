@@ -30,7 +30,7 @@ targeting that helps, not just "harder data".
 | **B7** | The web API (`http://127.0.0.1:8000/api/v1`, 39 endpoints) exactly as `docs/API_CONTRACT.md` (version 0.2.1). The frontend (built later by Manus) talks to this. |
 | **B8** | The first real end-to-end run on the GPU through the API (Qwen3-0.6B, explore). It worked; it also found bugs, which were fixed (see §4). |
 
-About 200 automatic tests check all of this (**CPU**). Nothing was ever pushed: you push yourself.
+About 200 automatic tests check all of this (**CPU**). Claude never pushes: you push yourself (the branch is pushed and in sync as of 2026-10-18).
 
 ---
 
@@ -81,7 +81,7 @@ Merging the trained add-on (LoRA adapter) into the model before testing: **1.84x
 
 ---
 
-## 5. The paper runs (running now)
+## 5. The paper runs (done)
 
 ### 5.1 What each paper run does (`configs/main.yaml`, locked)
 - **5 training setups × 3 random seeds = 15 trainings per model**, each with 600,000 tokens of training text:
@@ -111,8 +111,7 @@ Merging the trained add-on (LoRA adapter) into the model before testing: **1.84x
 
 The 0.6B run was stopped once (2026-10-08 ~02:30) because the laptop ran low on memory; it was resumed from its
 last checkpoint, nothing finished was lost, ~9 hours were lost. Since then the worker runs in its own minimized
-window ("DreamMachine paper worker"), outside Claude Code. The 1.7B time is a guess until its first training is
-measured. Results: `runs/pipelines/<job>/results.json` and `report.md`. Worker log: `runs/paper_worker.log`.
+window ("DreamMachine paper worker"), outside Claude Code. Results: `runs/pipelines/<job>/results.json` and `report.md`. Worker log: `runs/paper_worker.log`.
 Doc edits during a run are committed at once (a run checks for a clean repo when it starts).
 
 ### 5.3a First paper result: Qwen3-0.6B (in plain words; numbers in `docs/RUNNING.md` §14)
@@ -154,27 +153,23 @@ Yes — when a model is weak at, for example, multi-step problems, that is writt
    model. Updated by Claude after each model's diagnosis and again after training.
 
 Where to look now: Qwen3-0.6B → `runs/pipelines/04f319d1cca7/` (diagnosis made there, reused by
-`80b37628b193`); Qwen3-1.7B → `runs/pipelines/409305f3e2f2/` once its diagnosis has run.
+`80b37628b193`); Qwen3-1.7B → `runs/pipelines/409305f3e2f2/`.
 **`runs/` is not in git** (too big; it stays only on this laptop) — copy it somewhere safe after the runs.
 
 ---
 
 ## 6. Next steps
 
-**Claude (after the runs):**
-0. Done: both paper runs finished and written up — 0.6B on 2026-10-09 (`docs/RUNNING.md` §14), 1.7B on
-   2026-10-10 (§15), both in `docs/weakness.md`. Next: the team decides how to read the result (PLAN.md question 10).
-1. Watch the runs; resume any step that fails.
-2. Update the 1.7B time estimate after its first training.
-3. After the 1.7B diagnosis (around Oct 8 evening): fill in its section of `docs/weakness.md`. After each run
-   finishes: add "did training fix the weakness?" to `docs/weakness.md`.
-4. When both finish: summarise the results (headline: targeted − matched control; the weakness slice; the
-   GSM8K cost), update `docs/RUNNING.md` and `docs/COMPONENTS.md`, commit.
+**Claude:**
+- Done: both paper runs finished and written up — 0.6B on 2026-10-09 (`docs/RUNNING.md` §14), 1.7B on
+  2026-10-10 (§15), both in `docs/weakness.md` (diagnosis and "did training fix it?"). Nothing is left for Claude
+  until the team decides how to read the result (PLAN.md question 10). A changed targeting rule would be a new
+  protocol and needs new runs.
 
 **You / the team:**
-1. Keep the laptop plugged in and not sleeping while the runs go (a pause just delays them; they resume).
-2. After the runs: record today's decisions in `PLAN.md` (an automatic safety check blocked Claude from doing it).
-3. Push the branch `claude/wonderful-hypatia-pqs6t9` (about 30 local commits).
+1. Back up `runs/` (not in git; it exists only on this laptop).
+2. Decide PLAN.md open question 10 (paper framing; whether to target several weaknesses).
+3. Done: the branch `claude/wonderful-hypatia-pqs6t9` is pushed and in sync with origin.
 4. Label the human error sample `runs/pipelines/5a584e16390b/annotate_errors.csv` (checks the automatic error labels).
 5. Check the citation "O'Grady & Ramlan (2026)" in `docs/RESEARCH.md` — it could not be found online.
 6. Decide the KS-statistic threshold for a "bad match" (today it only warns).
