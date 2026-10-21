@@ -98,6 +98,14 @@ Windows spills VRAM into system RAM instead of OOM — keep batches inside 8 GB)
   POST   /api/v1/tools/lltm-fit
   ```
 
+## Frontend updates log (asked by the user, 2026-10-21)
+- `frontend_handoff/` holds the files for the frontend AI (copies of the contract, openapi, weakness, benchmarks;
+  refresh with `powershell -File frontend_handoff\sync.ps1`).
+- Every backend change the frontend can see (routes, fields, enums, defaults, behaviour, new run kinds, models,
+  benchmarks, prompts, new training results that change what screens show) gets a thorough entry in
+  `frontend_handoff/UPDATES_FOR_FRONTEND.md` **in the same commit** (template inside, newest first): what changed,
+  what the frontend must do per screen, how to check it. Then run `sync.ps1`.
+
 ## Pointers
 `PLAN.md` · `docs/API_CONTRACT.md` · `docs/RESEARCH.md` (protected) · `docs/COMPONENTS.md` · `docs/RUNNING.md`
 · `docs/WORK.md` (plain-words work log + next steps) · `docs/weakness.md` (each model's weaknesses, plain words)
