@@ -1,4 +1,4 @@
-# DreamMachine
+# EL MAIN: DreamMachine
 
 DreamMachine finds **where a small language model fails at multi-step arithmetic word problems**, writes new
 training problems **by code** aimed at exactly that weakness, fine-tunes the model on them, and tests it again.
