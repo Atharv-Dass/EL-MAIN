@@ -549,5 +549,4 @@ runs/           results and database (created when you run; not in git)
 | [`CLAUDE.md`](CLAUDE.md) | Project rules for the AI coding assistant. |
 | [`frontend_handoff/`](frontend_handoff/README.md) | Everything the frontend builder needs. |
 
-Project status: the backend (milestones B0-B8) is complete and both paper runs are finished. The frontend is built
-separately by Manus AI from the API contract. There is no `LICENSE` file yet: ask the team before reusing the code.
+Project status: the backend (milestones B0-B8) is complete and both paper runs are finished. The frontend will be built separately using the API contract. There is no `LICENSE` file yet: ask the team before reusing the code.
